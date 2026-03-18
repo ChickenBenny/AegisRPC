@@ -3,8 +3,8 @@
 ## Phase 1: The Foundations
 *Goal: Build a basic RPC proxy that can forward requests.*
 - [x] **Task 1.1:** Initialize Go Project (`go mod init`).
-- [ ] **Task 1.2:** Implement a basic HTTP Reverse Proxy to forward `POST` requests.
-- [ ] **Task 1.3:** Define JSON-RPC Request/Response structs and parse payloads.
+- [x] **Task 1.2:** Implement a basic HTTP Reverse Proxy to forward `POST` requests.
+- [x] **Task 1.3:** Define JSON-RPC Request/Response structs and parse payloads.
 - **Learning:** Understanding `net/http` and `httputil.ReverseProxy`.
 
 ## Phase 2: Reliability & Health
