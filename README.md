@@ -1,51 +1,23 @@
-# AegisRPC: The Autonomous Guardian of Web3 Integrity & Performance
+# AegisRPC: The Intelligent Auto-Discovering Web3 RPC Gateway
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Go Report Card](https://goreportcard.com/badge/github.com/aegisrpc/aegisrpc)](https://goreportcard.com/report/github.com/aegisrpc/aegisrpc)
+## 1. Vision
+AegisRPC aims to be the "Traefik" for Web3. It provides a robust, self-healing, and cost-efficient middleware layer for interacting with blockchain JSON-RPC nodes. Developers should no longer need to manually manage complex node lists, health checks, or caching strategies.
 
-AegisRPC is a **Chain-Semantic Aware RPC Gateway** designed to be the "Traefik of Web3". Unlike traditional load balancers, AegisRPC understands the underlying JSON-RPC protocol, ensuring data integrity, reducing operational costs, and providing extreme stability for decentralized applications.
+## 2. Core Pain Points Addressed
+- **Semantic Errors (The "False 200 OK"):** Resolves issues where RPC nodes return HTTP 200 but the body contains logical errors (e.g., `Execution Reverted`).
+- **Block Height Divergence:** Automatically filters out lagging nodes, preventing frontends from receiving stale data or non-existent blocks.
+- **Capability Mismatch:** Distinguishes between Archive, Full, and Debug nodes to route specialized requests correctly (e.g., `debug_traceTransaction`).
+- **High RPC Costs:** Uses "Request Coalescing" (SingleFlight) to drastically reduce duplicate upstream requests and provider bills.
 
-## 🛡️ Why AegisRPC?
+## 3. Key Features
+- **Auto-Discovery:** Automatically probes node capabilities (Archive vs Full, Debug support) and synchronization status.
+- **Smart Caching:** Re-org aware caching that ensures data consistency even during chain reorganizations.
+- **Request Coalescing:** Merges identical concurrent requests into one upstream call.
+- **Cloud-Native Design:** Built for containerized environments with support for health probes and metrics.
+- **Observability:** A dashboard to monitor latency, sync progress, cache hit rates, and cost savings.
 
-In the current Web3 landscape, developers face critical infrastructure challenges that traditional proxies (Nginx, HAProxy) cannot solve:
-
-- **The "False 200 OK" Trap:** Upstream nodes often return an HTTP 200 status code even when the internal JSON-RPC response contains logic errors (e.g., `Execution Reverted` or `Internal Error`). AegisRPC inspects the payload to ensure only valid data reaches your DApp.
-- **Block Height Divergence:** Nodes can fall out of sync or lag behind the tip of the chain. AegisRPC continuously probes block heights and automatically ejects "zombie nodes" to prevent your frontend from displaying stale data.
-- **Capability Mismatch:** Routing an `eth_debugTraceTransaction` request to a non-archive or non-debug node leads to failure. AegisRPC auto-classifies nodes (Archive, Full, Debug) and routes requests with precision.
-- **The "RPC Tax":** High-traffic DApps pay exorbitant fees for redundant requests. AegisRPC employs **Request Coalescing** to merge identical concurrent requests, slashing your RPC bills instantly.
-
-## 🚀 Key Features
-
-### 🔍 Auto-Discovery & Health Probing
-Real-time monitoring of upstream synchronization status, latency, and method capabilities. Automatically routes around failing or lagging nodes.
-
-### ⚡ Smart Re-org Aware Caching
-A sophisticated caching layer that understands chain finality. It caches data intelligently after block confirmation and automatically invalidates entries when a chain re-org is detected.
-
-### 💎 Request Coalescing (SingleFlight)
-Utilizes the SingleFlight pattern to merge high-frequency identical requests (e.g., `eth_blockNumber`, `eth_gasPrice`) into a single upstream call, drastically reducing load and cost.
-
-### ☸️ Cloud-Native & DevOps Friendly
-First-class support for Docker Labels and Kubernetes Ingress. AegisRPC seamlessly integrates into your existing CI/CD and orchestration workflows.
-
-### 📊 Observability & Cost Analytics
-Native Prometheus metrics and Grafana dashboards to monitor node health, cache hit rates, and direct cost savings in real-time.
-
-## 🗺️ MVP Roadmap
-
-- [ ] **Core Engine:** High-performance Golang-based Reverse Proxy core.
-- [ ] **Upstream Health Manager:** Implementation of `eth_blockNumber` probes and auto-failover.
-- [ ] **Method Classifier:** Automated identification of Node capabilities (Archive vs. Full).
-- [ ] **SingleFlight Middleware:** Core logic for request merging and deduplication.
-- [ ] **Flexible Config Provider:** Support for YAML and Environment Variable configuration.
-
-## 🛠️ Tech Stack
-
-- **Core:** Go (Golang)
+## 4. Tech Stack
+- **Language:** Go (Golang)
 - **Cache:** Redis / In-memory LRU
 - **Observability:** Prometheus + Grafana
-- **Deployment:** Docker / Kubernetes / Helm
-
-## ⚖️ License
-
-Distributed under the MIT License. See `LICENSE` for more information.
+- **Deployment:** Docker / Kubernetes
