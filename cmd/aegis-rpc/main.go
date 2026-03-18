@@ -9,62 +9,70 @@ import (
 	"log"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
+	"strings"
 
 	"github.com/ChickenBenny/AegisRPC/internal/models"
+	"github.com/ChickenBenny/AegisRPC/internal/upstream"
 )
 
 func main() {
-	// 1. Parse command line flags for configuration
+	// 1. Parse command line flags
 	port := flag.Int("port", 8080, "The port to listen on")
-	upstreamURL := flag.String("upstream", "https://eth.llamarpc.com", "The upstream RPC provider URL")
+	upstreams := flag.String("upstreams", "https://eth.llamarpc.com", "Comma-separated list of upstream RPC URLs")
 	flag.Parse()
 
-	// 2. Parse the upstream URL
-	target, err := url.Parse(*upstreamURL)
+	// 2. Build upstream pool
+	urls := strings.Split(*upstreams, ",")
+	pool, err := upstream.NewPool(urls)
 	if err != nil {
-		log.Fatalf("Failed to parse upstream URL: %v", err)
+		log.Fatalf("Failed to create upstream pool: %v", err)
 	}
+	log.Printf("Loaded %d upstream(s)", len(urls))
 
-	// 3. Initialize the standard Reverse Proxy
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.Director = func(req *http.Request) {
-		req.URL.Scheme = target.Scheme
-		req.URL.Host = target.Host
-		req.Host = target.Host
-	}
-
-	// 4. Set up the handler
+	// 3. Set up the handler
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		// Read the body for inspection
+		// Pick a healthy upstream
+		node := pool.Next()
+		if node == nil {
+			http.Error(w, "No healthy upstream available", http.StatusBadGateway)
+			return
+		}
+
+		// Read body for inspection
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "Failed to read request body", http.StatusInternalServerError)
 			return
 		}
-
-		// Restore the body for the proxy to read
 		r.Body = io.NopCloser(bytes.NewBuffer(body))
 
-		// Parse the RPC request
+		// Parse and log the RPC method
 		var rpcReq models.RPCRequest
 		if err := json.Unmarshal(body, &rpcReq); err != nil {
 			log.Printf("Non-RPC request received: %v", err)
 		} else {
-			log.Printf("RPC Method: %s (ID: %v)", rpcReq.Method, rpcReq.ID)
+			log.Printf("[%s] RPC Method: %s (ID: %v)", node.URL.Host, rpcReq.Method, rpcReq.ID)
 		}
 
+		// Proxy to selected node
+		target := node.URL
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		proxy.Director = func(req *http.Request) {
+			req.URL.Scheme = target.Scheme
+			req.URL.Host = target.Host
+			req.Host = target.Host
+		}
 		proxy.ServeHTTP(w, r)
 	})
 
-	// 5. Start the server
+	// 4. Start the server
 	addr := fmt.Sprintf(":%d", *port)
-	log.Printf("AegisRPC started on %s, proxying to %s", addr, *upstreamURL)
+	log.Printf("AegisRPC started on %s", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
