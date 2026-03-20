@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -23,9 +25,15 @@ func (p *Pool) StartHealthChecks(ctx context.Context, interval time.Duration) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				var wg sync.WaitGroup
 				for _, node := range p.nodes {
-					go checkNode(node)
+					wg.Add(1)
+					go func(n *Upstream) {
+						defer wg.Done()
+						checkNode(n)
+					}(node)
 				}
+				wg.Wait()
 			}
 		}
 	}()
@@ -35,8 +43,13 @@ func checkNode(node *Upstream) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, node.URL.String(),
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, node.URL.String(),
 		bytes.NewReader(healthCheckPayload))
+	if err != nil {
+		log.Printf("[health] %s failed to build request: %v", node.URL.Host, err)
+		node.SetHealthy(false)
+		return
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Host = node.URL.Host
 
@@ -48,16 +61,38 @@ func checkNode(node *Upstream) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	var rpcResp struct {
-		Error *struct{ Message string } `json:"error"`
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[health] %s HTTP %d", node.URL.Host, resp.StatusCode)
+		node.SetHealthy(false)
+		return
 	}
-	if err := json.Unmarshal(body, &rpcResp); err != nil || rpcResp.Error != nil {
-		log.Printf("[health] %s returned RPC error", node.URL.Host)
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("[health] %s failed to read response: %v", node.URL.Host, err)
+		node.SetHealthy(false)
+		return
+	}
+
+	if err := validateRPCResponse(body); err != nil {
+		log.Printf("[health] %s RPC error: %v", node.URL.Host, err)
 		node.SetHealthy(false)
 		return
 	}
 
 	node.SetHealthy(true)
 	log.Printf("[health] %s OK", node.URL.Host)
+}
+
+func validateRPCResponse(body []byte) error {
+	var rpcResp struct {
+		Error *struct{ Message string } `json:"error"`
+	}
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		return fmt.Errorf("invalid JSON: %w", err)
+	}
+	if rpcResp.Error != nil {
+		return fmt.Errorf("rpc error: %s", rpcResp.Error.Message)
+	}
+	return nil
 }
