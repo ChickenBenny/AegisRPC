@@ -12,6 +12,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestParseBlockNumber(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected uint64
+		wantErr  bool
+	}{
+		{"0x1", 1, false},
+		{"0x3e8", 1000, false},
+		{"0x0", 0, false},
+		{"", 0, true},
+		{"not-hex", 0, true},
+	}
+
+	for _, tt := range tests {
+		result, err := parseBlockNumber(tt.input)
+		if tt.wantErr {
+			assert.Error(t, err, "input: %q", tt.input)
+		} else {
+			require.NoError(t, err, "input: %q", tt.input)
+			assert.Equal(t, tt.expected, result, "input: %q", tt.input)
+		}
+	}
+}
+
 func newTestNode(t *testing.T, serverURL string) *Upstream {
 	t.Helper()
 	node, err := NewUpstream(serverURL)

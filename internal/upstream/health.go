@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -37,6 +38,19 @@ func (p *Pool) StartHealthChecks(ctx context.Context, interval time.Duration) {
 			}
 		}
 	}()
+}
+
+func parseBlockNumber(hexStr string) (uint64, error) {
+	if len(hexStr) < 2 || hexStr[:2] != "0x" {
+		return 0, fmt.Errorf("block number must be hex string starting with 0x")
+	}
+
+	num, err := strconv.ParseUint(hexStr[2:], 16, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid block number: %w", err)
+	}
+
+	return num, nil
 }
 
 func checkNode(node *Upstream) {
