@@ -5,14 +5,15 @@
 - [x] **Task 1.1:** Initialize Go Project (`go mod init`).
 - [x] **Task 1.2:** Implement a basic HTTP Reverse Proxy to forward `POST` requests.
 - [x] **Task 1.3:** Define JSON-RPC Request/Response structs and parse payloads.
+- [ ] **Task 1.4:** Set up CI pipeline (GitHub Actions) to run tests on every push and PR.
 - **Learning:** Understanding `net/http` and `httputil.ReverseProxy`.
 
 ## Phase 2: Reliability & Health
 *Goal: Manage multiple nodes and auto-failover.*
-- [ ] **Task 2.1:** Implement Upstream Pool with multi-node support.
-- [ ] **Task 2.2:** Regular polling for `eth_blockNumber` and `eth_syncing`.
+- [x] **Task 2.1:** Implement Upstream Pool with multi-node support.
+- [x] **Task 2.2:** Regular polling for `eth_blockNumber` and `eth_syncing`.
 - [ ] **Task 2.3:** Height-check logic to mark nodes as Unhealthy if lagging.
-- **Learning:** Mastering Go Concurrency (Goroutines, Tickeres) and Mutexes.
+- **Learning:** Mastering Go Concurrency (Goroutines, Tickers) and Mutexes.
 
 ## Phase 3: Auto-Discovery
 *Goal: Automatically classify nodes (Archive/Full/Debug).*
@@ -40,3 +41,15 @@
 - [ ] **Task 6.2:** Develop a simple Monitoring Dashboard.
 - [ ] **Task 6.3:** Support Docker Labels / K8s Ingress integration.
 - **Learning:** Cloud-native monitoring and service discovery.
+
+---
+
+## Fixes & Improvements (from code review)
+- [x] Fix silent error ignoring in `health.go`
+- [x] Fix goroutine leak in `StartHealthChecks` (add `sync.WaitGroup`)
+- [x] Fix HTTP status code not checked in health check
+- [x] Fix upstream URL not trimmed on whitespace
+- [ ] Add load balancing (round-robin) to `Pool.Next()`
+- [ ] Add request body size limit
+- [ ] Add graceful shutdown (SIGTERM/SIGINT)
+- [ ] Add Pool-level Mutex for dynamic node management
