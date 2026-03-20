@@ -24,7 +24,13 @@ func main() {
 	flag.Parse()
 
 	// 2. Build upstream pool
-	urls := strings.Split(*upstreams, ",")
+	rawURLs := strings.Split(*upstreams, ",")
+	urls := make([]string, 0, len(rawURLs))
+	for _, u := range rawURLs {
+		if trimmed := strings.TrimSpace(u); trimmed != "" {
+			urls = append(urls, trimmed)
+		}
+	}
 	pool, err := upstream.NewPool(urls)
 	if err != nil {
 		log.Fatalf("Failed to create upstream pool: %v", err)

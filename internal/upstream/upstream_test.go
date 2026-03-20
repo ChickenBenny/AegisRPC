@@ -2,46 +2,42 @@ package upstream
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPoolNext_AllHealthy(t *testing.T) {
-	pool, _ := NewPool([]string{
+	pool, err := NewPool([]string{
 		"https://node1.example.com",
 		"https://node2.example.com",
 	})
+	require.NoError(t, err)
 
 	node := pool.Next()
-	if node == nil {
-		t.Fatal("expected a healthy node, got nil")
-	}
-	if node.URL.Host != "node1.example.com" {
-		t.Errorf("expected node1, got %s", node.URL.Host)
-	}
+	require.NotNil(t, node, "expected a healthy node, got nil")
+	assert.Equal(t, "node1.example.com", node.URL.Host)
 }
 
 func TestPoolNext_FirstUnhealthy(t *testing.T) {
-	pool, _ := NewPool([]string{
+	pool, err := NewPool([]string{
 		"https://node1.example.com",
 		"https://node2.example.com",
 	})
+	require.NoError(t, err)
 
 	pool.nodes[0].SetHealthy(false)
 
 	node := pool.Next()
-	if node == nil {
-		t.Fatal("expected node2 as fallback, got nil")
-	}
-	if node.URL.Host != "node2.example.com" {
-		t.Errorf("expected node2, got %s", node.URL.Host)
-	}
+	require.NotNil(t, node, "expected node2 as fallback, got nil")
+	assert.Equal(t, "node2.example.com", node.URL.Host)
 }
 
 func TestPoolNext_AllUnhealthy(t *testing.T) {
-	pool, _ := NewPool([]string{"https://node1.example.com"})
+	pool, err := NewPool([]string{"https://node1.example.com"})
+	require.NoError(t, err)
+
 	pool.nodes[0].SetHealthy(false)
 
-	node := pool.Next()
-	if node != nil {
-		t.Errorf("expected nil, got %s", node.URL.Host)
-	}
+	assert.Nil(t, pool.Next())
 }
