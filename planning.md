@@ -5,7 +5,7 @@
 - [x] **Task 1.1:** Initialize Go Project (`go mod init`).
 - [x] **Task 1.2:** Implement a basic HTTP Reverse Proxy to forward `POST` requests.
 - [x] **Task 1.3:** Define JSON-RPC Request/Response structs and parse payloads.
-- [ ] **Task 1.4:** Set up CI pipeline (GitHub Actions) to run tests on every push and PR.
+- [x] **Task 1.4:** Set up CI pipeline (GitHub Actions) to run tests on every push and PR.
 - **Learning:** Understanding `net/http` and `httputil.ReverseProxy`.
 
 ## Phase 2: Reliability & Health
