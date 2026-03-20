@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"strings"
+	"time"
 
 	"github.com/ChickenBenny/AegisRPC/internal/models"
 	"github.com/ChickenBenny/AegisRPC/internal/upstream"
@@ -28,6 +30,9 @@ func main() {
 		log.Fatalf("Failed to create upstream pool: %v", err)
 	}
 	log.Printf("Loaded %d upstream(s)", len(urls))
+
+	// Start background health checks every 15 seconds
+	pool.StartHealthChecks(context.Background(), 15*time.Second)
 
 	// 3. Set up the handler
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
