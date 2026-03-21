@@ -54,10 +54,11 @@ func main() {
 			return
 		}
 
-		// Read body for inspection
+		// Read body for inspection (limit to 1MB to prevent OOM)
+		r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			http.Error(w, "Failed to read request body", http.StatusInternalServerError)
+			http.Error(w, "Request too large", http.StatusRequestEntityTooLarge)
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewBuffer(body))
