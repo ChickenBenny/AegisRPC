@@ -42,6 +42,36 @@ func TestPoolNext_AllUnhealthy(t *testing.T) {
 	assert.Nil(t, pool.Next())
 }
 
+func TestPoolNext_RoundRobin(t *testing.T) {
+	pool, err := NewPool([]string{
+		"https://node1.example.com",
+		"https://node2.example.com",
+		"https://node3.example.com",
+	})
+	require.NoError(t, err)
+
+	// 三個請求應該輪流打到不同節點
+	assert.Equal(t, "node1.example.com", pool.Next().URL.Host)
+	assert.Equal(t, "node2.example.com", pool.Next().URL.Host)
+	assert.Equal(t, "node3.example.com", pool.Next().URL.Host)
+	assert.Equal(t, "node1.example.com", pool.Next().URL.Host) // 回到頭
+}
+
+func TestPoolNext_RoundRobin_SkipsUnhealthy(t *testing.T) {
+	pool, err := NewPool([]string{
+		"https://node1.example.com",
+		"https://node2.example.com",
+		"https://node3.example.com",
+	})
+	require.NoError(t, err)
+
+	pool.nodes[1].SetHealthy(false) // node2 掛掉
+
+	assert.Equal(t, "node1.example.com", pool.Next().URL.Host)
+	assert.Equal(t, "node3.example.com", pool.Next().URL.Host) // 跳過 node2
+	assert.Equal(t, "node1.example.com", pool.Next().URL.Host)
+}
+
 func TestMarkLaggingNodes_MarksBehindNodes(t *testing.T) {
 	pool, err := NewPool([]string{
 		"https://node1.example.com",

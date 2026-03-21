@@ -3,6 +3,7 @@ package upstream
 import (
 	"net/url"
 	"sync"
+	"sync/atomic"
 )
 
 // Upstream represents a single RPC node.
@@ -47,7 +48,8 @@ func (u *Upstream) BlockHeight() uint64 {
 
 // Pool manages a list of upstream nodes.
 type Pool struct {
-	nodes []*Upstream
+	nodes   []*Upstream
+	counter atomic.Uint64
 }
 
 func NewPool(urls []string) (*Pool, error) {
@@ -64,7 +66,10 @@ func NewPool(urls []string) (*Pool, error) {
 
 // Next returns the first healthy upstream, or nil if none available.
 func (p *Pool) Next() *Upstream {
-	for _, node := range p.nodes {
+	n := uint64(len(p.nodes))
+	for i := uint64(0); i < n; i++ {
+		idx := (p.counter.Add(1) - 1) % n
+		node := p.nodes[idx]
 		if node.IsHealthy() {
 			return node
 		}
