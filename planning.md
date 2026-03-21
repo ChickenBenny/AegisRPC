@@ -16,11 +16,12 @@
 - **Learning:** Mastering Go Concurrency (Goroutines, Tickers) and Mutexes.
 
 ## Phase 3: Auto-Discovery
-*Goal: Automatically classify nodes (Archive/Full/Debug).*
-- [ ] **Task 3.1:** Implement Node Probing for historical state and trace methods.
-- [ ] **Task 3.2:** Method-based Routing: Direct `debug_*` to designated nodes.
-- [ ] **Task 3.3:** Dynamic routing rules similar to Traefik.
-- **Learning:** Ethereum node architecture (State Pruning vs Archive).
+*Goal: Automatically classify nodes by capability, chain-agnostic design.*
+- [ ] **Task 3.1:** Define `Capability` bitmask (`uint16`) and `Prober` interface.
+- [ ] **Task 3.2:** Implement `EthProber` — probe Archive / Debug / Trace capabilities.
+- [ ] **Task 3.3:** Method-based routing via capability mapping (`debug_*` → CapDebug).
+- [ ] **Task 3.4:** Manual capability annotation via URL syntax (`url[archive,debug]`).
+- **Learning:** Ethereum node architecture (State Pruning vs Archive). Interface-driven design for multi-chain extensibility.
 
 ## Phase 4: Performance & Cost Optimization
 *Goal: Save RPC provider bills.*
@@ -41,6 +42,14 @@
 - [ ] **Task 6.2:** Develop a simple Monitoring Dashboard.
 - [ ] **Task 6.3:** Support Docker Labels / K8s Ingress integration.
 - **Learning:** Cloud-native monitoring and service discovery.
+
+## Phase 7: Multi-Chain Support
+*Goal: Extend AegisRPC beyond Ethereum to other chains.*
+- [ ] **Task 7.1:** EVM-compatible chains (Polygon, BSC, Arbitrum, Optimism) — reuse `EthProber`, add chain ID detection.
+- [ ] **Task 7.2:** `SolanaProber` — probe RPC vs Vote node, Geyser plugin availability.
+- [ ] **Task 7.3:** Chain-aware health check — each chain has different block time expectations.
+- [ ] **Task 7.4:** Multi-chain pool management — route by chain ID in addition to capability.
+- **Learning:** Non-EVM chain architectures (UTXO, account model variants, Solana's slot/epoch model).
 
 ---
 
