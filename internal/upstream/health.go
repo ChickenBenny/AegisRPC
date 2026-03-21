@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -15,8 +16,8 @@ import (
 var healthCheckPayload = []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
 
 // StartHealthChecks polls every node in the pool on the given interval.
-// Marks a node unhealthy if the request fails or returns an RPC error.
-func (p *Pool) StartHealthChecks(ctx context.Context, interval time.Duration) {
+// Nodes lagging more than lagThreshold blocks behind the best node are marked unhealthy.
+func (p *Pool) StartHealthChecks(ctx context.Context, interval time.Duration, lagThreshold uint64) {
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -34,9 +35,23 @@ func (p *Pool) StartHealthChecks(ctx context.Context, interval time.Duration) {
 					}(node)
 				}
 				wg.Wait()
+				p.markLaggingNodes(lagThreshold)
 			}
 		}
 	}()
+}
+
+func parseBlockNumber(hexStr string) (uint64, error) {
+	if len(hexStr) < 2 || hexStr[:2] != "0x" {
+		return 0, fmt.Errorf("block number must be hex string starting with 0x")
+	}
+
+	num, err := strconv.ParseUint(hexStr[2:], 16, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid block number: %w", err)
+	}
+
+	return num, nil
 }
 
 func checkNode(node *Upstream) {
@@ -67,32 +82,43 @@ func checkNode(node *Upstream) {
 		return
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	const maxResponseSize = 1 * 1024 * 1024 // 1 MB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
 		log.Printf("[health] %s failed to read response: %v", node.URL.Host, err)
 		node.SetHealthy(false)
 		return
 	}
 
-	if err := validateRPCResponse(body); err != nil {
+	blockHeight, err := validateRPCResponse(body)
+	if err != nil {
 		log.Printf("[health] %s RPC error: %v", node.URL.Host, err)
 		node.SetHealthy(false)
 		return
 	}
 
 	node.SetHealthy(true)
+	node.SetBlockHeight(blockHeight)
 	log.Printf("[health] %s OK", node.URL.Host)
 }
 
-func validateRPCResponse(body []byte) error {
+func validateRPCResponse(body []byte) (uint64, error) {
 	var rpcResp struct {
-		Error *struct{ Message string } `json:"error"`
+		Error  *struct{ Message string } `json:"error"`
+		Result string                    `json:"result"`
 	}
 	if err := json.Unmarshal(body, &rpcResp); err != nil {
-		return fmt.Errorf("invalid JSON: %w", err)
+		return 0, fmt.Errorf("invalid JSON: %w", err)
 	}
 	if rpcResp.Error != nil {
-		return fmt.Errorf("rpc error: %s", rpcResp.Error.Message)
+		return 0, fmt.Errorf("rpc error: %s", rpcResp.Error.Message)
 	}
-	return nil
+	if rpcResp.Result == "" {
+		return 0, fmt.Errorf("empty result")
+	}
+	blockHeight, err := parseBlockNumber(rpcResp.Result)
+	if err != nil {
+		return 0, fmt.Errorf("invalid block number: %w", err)
+	}
+	return blockHeight, nil
 }

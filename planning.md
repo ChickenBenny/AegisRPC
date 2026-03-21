@@ -12,7 +12,7 @@
 *Goal: Manage multiple nodes and auto-failover.*
 - [x] **Task 2.1:** Implement Upstream Pool with multi-node support.
 - [x] **Task 2.2:** Regular polling for `eth_blockNumber` and `eth_syncing`.
-- [ ] **Task 2.3:** Height-check logic to mark nodes as Unhealthy if lagging.
+- [x] **Task 2.3:** Height-check logic to mark nodes as Unhealthy if lagging.
 - **Learning:** Mastering Go Concurrency (Goroutines, Tickers) and Mutexes.
 
 ## Phase 3: Auto-Discovery
@@ -49,7 +49,7 @@
 - [x] Fix goroutine leak in `StartHealthChecks` (add `sync.WaitGroup`)
 - [x] Fix HTTP status code not checked in health check
 - [x] Fix upstream URL not trimmed on whitespace
-- [ ] Add load balancing (round-robin) to `Pool.Next()`
-- [ ] Add request body size limit
-- [ ] Add graceful shutdown (SIGTERM/SIGINT)
-- [ ] Add Pool-level Mutex for dynamic node management
+- [x] Add load balancing (round-robin) to `Pool.Next()`
+- [x] Add request body size limit (1MB via `MaxBytesReader` / `LimitReader`)
+- [x] Add graceful shutdown (SIGTERM/SIGINT)
+- [ ] Add Pool-level Mutex for dynamic node management (deferred — nodes slice is immutable for now)

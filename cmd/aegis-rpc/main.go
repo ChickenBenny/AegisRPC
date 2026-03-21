@@ -10,7 +10,10 @@ import (
 	"log"
 	"net/http"
 	"net/http/httputil"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ChickenBenny/AegisRPC/internal/models"
@@ -37,32 +40,36 @@ func main() {
 	}
 	log.Printf("Loaded %d upstream(s)", len(urls))
 
-	// Start background health checks every 15 seconds
-	pool.StartHealthChecks(context.Background(), 15*time.Second)
+	// 3. Context that cancels on SIGTERM or SIGINT
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	// 3. Set up the handler
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	// 4. Start background health checks
+	pool.StartHealthChecks(ctx, 15*time.Second, 10)
+
+	// 5. Set up the handler
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		// Pick a healthy upstream
 		node := pool.Next()
 		if node == nil {
 			http.Error(w, "No healthy upstream available", http.StatusBadGateway)
 			return
 		}
 
-		// Read body for inspection
+		// Read body for inspection (limit to 1MB to prevent OOM)
+		r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			http.Error(w, "Failed to read request body", http.StatusInternalServerError)
+			http.Error(w, "Request too large", http.StatusRequestEntityTooLarge)
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewBuffer(body))
 
-		// Parse and log the RPC method
 		var rpcReq models.RPCRequest
 		if err := json.Unmarshal(body, &rpcReq); err != nil {
 			log.Printf("Non-RPC request received: %v", err)
@@ -70,7 +77,6 @@ func main() {
 			log.Printf("[%s] RPC Method: %s (ID: %v)", node.URL.Host, rpcReq.Method, rpcReq.ID)
 		}
 
-		// Proxy to selected node
 		target := node.URL
 		proxy := httputil.NewSingleHostReverseProxy(target)
 		proxy.Director = func(req *http.Request) {
@@ -81,10 +87,29 @@ func main() {
 		proxy.ServeHTTP(w, r)
 	})
 
-	// 4. Start the server
-	addr := fmt.Sprintf(":%d", *port)
-	log.Printf("AegisRPC started on %s", addr)
-	if err := http.ListenAndServe(addr, nil); err != nil {
-		log.Fatalf("Server failed: %v", err)
+	// 6. Start server
+	srv := &http.Server{
+		Addr:    fmt.Sprintf(":%d", *port),
+		Handler: mux,
 	}
+
+	go func() {
+		log.Printf("AegisRPC started on :%d", *port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", err)
+		}
+	}()
+
+	// 7. Block until signal received
+	<-ctx.Done()
+	log.Println("Shutting down...")
+
+	// 8. Give in-flight requests up to 15s to finish
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Shutdown error: %v", err)
+	}
+
+	log.Println("Stopped.")
 }
