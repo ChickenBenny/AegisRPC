@@ -43,6 +43,19 @@ func newTestNode(t *testing.T, serverURL string) *Upstream {
 	return node
 }
 
+func TestCheckNode_StoresBlockHeight(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"jsonrpc":"2.0","result":"0x3e8","id":1}`))
+	}))
+	defer server.Close()
+
+	node := newTestNode(t, server.URL)
+	checkNode(node)
+
+	assert.True(t, node.IsHealthy())
+	assert.Equal(t, uint64(1000), node.BlockHeight())
+}
+
 func TestCheckNode_Healthy(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`))
@@ -86,6 +99,33 @@ func TestCheckNode_InvalidJSON(t *testing.T) {
 	assert.False(t, node.IsHealthy())
 }
 
+func TestStartHealthChecks_MarksLaggingNode(t *testing.T) {
+	// node1: best block
+	server1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"jsonrpc":"2.0","result":"0x3e8","id":1}`)) // block 1000
+	}))
+	defer server1.Close()
+
+	// node2: lagging far behind
+	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"jsonrpc":"2.0","result":"0x320","id":1}`)) // block 800
+	}))
+	defer server2.Close()
+
+	pool, err := NewPool([]string{server1.URL, server2.URL})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool.StartHealthChecks(ctx, 50*time.Millisecond, 10)
+
+	time.Sleep(150 * time.Millisecond)
+
+	assert.True(t, pool.nodes[0].IsHealthy(), "node1 should be healthy")
+	assert.False(t, pool.nodes[1].IsHealthy(), "node2 should be unhealthy (lagging 200 blocks)")
+}
+
 func TestStartHealthChecks_UpdatesHealth(t *testing.T) {
 	var healthy atomic.Bool
 	healthy.Store(true)
@@ -105,7 +145,7 @@ func TestStartHealthChecks_UpdatesHealth(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool.StartHealthChecks(ctx, 50*time.Millisecond)
+	pool.StartHealthChecks(ctx, 50*time.Millisecond, 10)
 
 	time.Sleep(100 * time.Millisecond)
 	assert.True(t, pool.nodes[0].IsHealthy(), "should be healthy initially")

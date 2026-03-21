@@ -38,7 +38,7 @@ func main() {
 	log.Printf("Loaded %d upstream(s)", len(urls))
 
 	// Start background health checks every 15 seconds
-	pool.StartHealthChecks(context.Background(), 15*time.Second)
+	pool.StartHealthChecks(context.Background(), 15*time.Second, 10)
 
 	// 3. Set up the handler
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
