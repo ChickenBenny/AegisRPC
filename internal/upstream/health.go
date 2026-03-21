@@ -82,7 +82,8 @@ func checkNode(node *Upstream) {
 		return
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	const maxResponseSize = 1 * 1024 * 1024 // 1 MB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
 		log.Printf("[health] %s failed to read response: %v", node.URL.Host, err)
 		node.SetHealthy(false)

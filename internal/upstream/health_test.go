@@ -68,6 +68,22 @@ func TestCheckNode_Healthy(t *testing.T) {
 	assert.True(t, node.IsHealthy())
 }
 
+func TestCheckNode_OversizedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 先寫合法 JSON prefix，後面接大量垃圾資料，超過 1MB
+		w.Write([]byte(`{"jsonrpc":"2.0","result":"`))
+		w.Write(make([]byte, 2*1024*1024)) // 2MB of garbage
+		w.Write([]byte(`"}`))
+	}))
+	defer server.Close()
+
+	node := newTestNode(t, server.URL)
+	checkNode(node)
+
+	// LimitReader 截斷後 JSON 不完整，應該 parse 失敗 → unhealthy
+	assert.False(t, node.IsHealthy(), "oversized response should mark node unhealthy")
+}
+
 func TestCheckNode_RPCError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"node is syncing"},"id":1}`))
