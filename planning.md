@@ -36,6 +36,14 @@
 - [ ] **Task 5.2:** Virtual WebSockets with transparent upstream failover.
 - **Learning:** Blockchain Finality and Consistency models.
 
+## Phase 5.5: Configuration & Environment
+*Goal: Make all tunable parameters configurable via ENV for Docker / Kubernetes deployment.*
+- [ ] **Task 5.5.1:** Define all configurable parameters (timeouts, thresholds, ports, upstream URLs).
+- [ ] **Task 5.5.2:** Read config from ENV with sensible defaults (`AEGIS_PORT`, `AEGIS_UPSTREAMS`, `AEGIS_PROBE_TIMEOUT`, `AEGIS_LAG_THRESHOLD`, ...).
+- [ ] **Task 5.5.3:** Support config file (YAML/TOML) as an alternative to ENV.
+- [ ] **Task 5.5.4:** Document all ENV variables in README.
+- **Learning:** Twelve-Factor App methodology. Config management in cloud-native services.
+
 ## Phase 6: Observability & Cloud
 *Goal: Monitoring and Deployment.*
 - [ ] **Task 6.1:** Integrate Prometheus Metrics (Latency, RPS, Cache Hit Rate).
