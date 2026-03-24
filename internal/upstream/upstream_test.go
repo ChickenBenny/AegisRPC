@@ -3,6 +3,7 @@ package upstream
 import (
 	"testing"
 
+	"github.com/ChickenBenny/AegisRPC/internal/capability"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -70,6 +71,63 @@ func TestPoolNext_RoundRobin_SkipsUnhealthy(t *testing.T) {
 	assert.Equal(t, "node1.example.com", pool.Next().URL.Host)
 	assert.Equal(t, "node3.example.com", pool.Next().URL.Host) // 跳過 node2
 	assert.Equal(t, "node1.example.com", pool.Next().URL.Host)
+}
+
+// ---------------------------------------------------------------------------
+// Pool.NextWithCapability
+// ---------------------------------------------------------------------------
+
+func TestPool_NextWithCapability_ReturnsMatchingNode(t *testing.T) {
+	pool, err := NewPool([]string{
+		"https://basic.example.com",
+		"https://debug.example.com",
+	})
+	require.NoError(t, err)
+
+	pool.nodes[0].SetCapabilities(capability.CapBasic)
+	pool.nodes[1].SetCapabilities(capability.CapBasic | capability.CapDebug)
+
+	node := pool.NextWithCapability(capability.CapDebug)
+	require.NotNil(t, node)
+	assert.Equal(t, "debug.example.com", node.URL.Host)
+}
+
+func TestPool_NextWithCapability_NoneQualified_ReturnsNil(t *testing.T) {
+	pool, err := NewPool([]string{"https://basic.example.com"})
+	require.NoError(t, err)
+
+	pool.nodes[0].SetCapabilities(capability.CapBasic)
+
+	assert.Nil(t, pool.NextWithCapability(capability.CapTrace))
+}
+
+func TestPool_NextWithCapability_SkipsUnhealthyNode(t *testing.T) {
+	pool, err := NewPool([]string{
+		"https://debug1.example.com",
+		"https://debug2.example.com",
+	})
+	require.NoError(t, err)
+
+	pool.nodes[0].SetCapabilities(capability.CapBasic | capability.CapDebug)
+	pool.nodes[1].SetCapabilities(capability.CapBasic | capability.CapDebug)
+	pool.nodes[0].SetHealthy(false)
+
+	node := pool.NextWithCapability(capability.CapDebug)
+	require.NotNil(t, node)
+	assert.Equal(t, "debug2.example.com", node.URL.Host)
+}
+
+func TestPool_Nodes_ReturnsAllNodes(t *testing.T) {
+	pool, err := NewPool([]string{
+		"https://node1.example.com",
+		"https://node2.example.com",
+	})
+	require.NoError(t, err)
+
+	nodes := pool.Nodes()
+	assert.Len(t, nodes, 2)
+	assert.Equal(t, "node1.example.com", nodes[0].URL.Host)
+	assert.Equal(t, "node2.example.com", nodes[1].URL.Host)
 }
 
 func TestMarkLaggingNodes_MarksBehindNodes(t *testing.T) {
