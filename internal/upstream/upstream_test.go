@@ -180,3 +180,92 @@ func TestMarkLaggingNodes_WithinThreshold(t *testing.T) {
 	assert.True(t, pool.nodes[0].IsHealthy())
 	assert.True(t, pool.nodes[1].IsHealthy(), "node2 is within threshold, should stay healthy")
 }
+
+// ---------------------------------------------------------------------------
+// ParseAnnotatedURL — parses "https://host[cap1,cap2]" into URL + Capability
+// ---------------------------------------------------------------------------
+
+func TestParseAnnotatedURL_NoAnnotation(t *testing.T) {
+	url, caps, err := ParseAnnotatedURL("https://node.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, "https://node.example.com", url)
+	assert.Equal(t, capability.Capability(0), caps, "no annotation means caps not set (prober will handle)")
+}
+
+func TestParseAnnotatedURL_Debug(t *testing.T) {
+	url, caps, err := ParseAnnotatedURL("https://node.example.com[debug]")
+	require.NoError(t, err)
+	assert.Equal(t, "https://node.example.com", url)
+	assert.Equal(t, capability.CapBasic|capability.CapDebug, caps)
+}
+
+func TestParseAnnotatedURL_Trace(t *testing.T) {
+	url, caps, err := ParseAnnotatedURL("https://node.example.com[trace]")
+	require.NoError(t, err)
+	assert.Equal(t, "https://node.example.com", url)
+	assert.Equal(t, capability.CapBasic|capability.CapTrace, caps)
+}
+
+func TestParseAnnotatedURL_Historical(t *testing.T) {
+	url, caps, err := ParseAnnotatedURL("https://node.example.com[historical]")
+	require.NoError(t, err)
+	assert.Equal(t, "https://node.example.com", url)
+	assert.Equal(t, capability.CapBasic|capability.CapHistorical, caps)
+}
+
+func TestParseAnnotatedURL_MultipleCaps(t *testing.T) {
+	url, caps, err := ParseAnnotatedURL("https://node.example.com[debug,trace]")
+	require.NoError(t, err)
+	assert.Equal(t, "https://node.example.com", url)
+	assert.Equal(t, capability.CapBasic|capability.CapDebug|capability.CapTrace, caps)
+}
+
+func TestParseAnnotatedURL_TrimsSpaces(t *testing.T) {
+	url, caps, err := ParseAnnotatedURL("https://node.example.com[debug, trace]")
+	require.NoError(t, err)
+	assert.Equal(t, "https://node.example.com", url)
+	assert.Equal(t, capability.CapBasic|capability.CapDebug|capability.CapTrace, caps)
+}
+
+func TestParseAnnotatedURL_UnknownCap_ReturnsError(t *testing.T) {
+	_, _, err := ParseAnnotatedURL("https://node.example.com[unknown]")
+	require.Error(t, err)
+}
+
+func TestParseAnnotatedURL_EmptyBrackets_ReturnsError(t *testing.T) {
+	_, _, err := ParseAnnotatedURL("https://node.example.com[]")
+	require.Error(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// NewPool — annotated URLs set capabilities on nodes
+// ---------------------------------------------------------------------------
+
+func TestNewPool_AnnotatedURL_SetsCapabilities(t *testing.T) {
+	pool, err := NewPool([]string{
+		"https://debug.example.com[debug]",
+		"https://trace.example.com[trace]",
+	})
+	require.NoError(t, err)
+
+	nodes := pool.Nodes()
+	assert.Equal(t, capability.CapBasic|capability.CapDebug, nodes[0].Capabilities())
+	assert.Equal(t, capability.CapBasic|capability.CapTrace, nodes[1].Capabilities())
+}
+
+func TestNewPool_MixedAnnotated_UnannotatedHasZeroCaps(t *testing.T) {
+	pool, err := NewPool([]string{
+		"https://plain.example.com",
+		"https://debug.example.com[debug]",
+	})
+	require.NoError(t, err)
+
+	nodes := pool.Nodes()
+	assert.Equal(t, capability.Capability(0), nodes[0].Capabilities(), "unannotated node caps should be 0")
+	assert.Equal(t, capability.CapBasic|capability.CapDebug, nodes[1].Capabilities())
+}
+
+func TestNewPool_InvalidAnnotation_ReturnsError(t *testing.T) {
+	_, err := NewPool([]string{"https://node.example.com[bad_cap]"})
+	require.Error(t, err)
+}

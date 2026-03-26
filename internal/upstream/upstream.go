@@ -1,7 +1,9 @@
 package upstream
 
 import (
+	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -18,11 +20,17 @@ type Upstream struct {
 }
 
 func NewUpstream(rawURL string) (*Upstream, error) {
-	u, err := url.Parse(rawURL)
+	cleanURL, caps, err := ParseAnnotatedURL(rawURL)
 	if err != nil {
 		return nil, err
 	}
-	return &Upstream{URL: u, healthy: true}, nil
+
+	u, err := url.Parse(cleanURL)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Upstream{URL: u, healthy: true, capabilities: caps}, nil
 }
 
 func (u *Upstream) SetHealthy(healthy bool) {
@@ -122,4 +130,39 @@ func (p *Pool) markLaggingNodes(threshold uint64) {
 			node.SetHealthy(false)
 		}
 	}
+}
+
+func ParseAnnotatedURL(rawUrl string) (string, capability.Capability, error) {
+	startIdx := strings.Index(rawUrl, "[")
+	if startIdx == -1 {
+		return rawUrl, capability.Capability(0), nil
+	}
+
+	endIdx := strings.Index(rawUrl, "]")
+	if endIdx == -1 || endIdx < startIdx {
+		return "", capability.Capability(0), fmt.Errorf("invalid annotated URL: missing closing ']' in %s", rawUrl)
+	}
+
+	capStr := rawUrl[startIdx+1 : endIdx]
+	if strings.TrimSpace(capStr) == "" {
+		return "", capability.Capability(0), fmt.Errorf("invalid annotated URL: empty brackets in %s", rawUrl)
+	}
+
+	caps := capability.CapBasic
+	for _, c := range strings.Split(capStr, ",") {
+		switch strings.TrimSpace(c) {
+		case "basic":
+			caps |= capability.CapBasic
+		case "historical":
+			caps |= capability.CapHistorical
+		case "debug":
+			caps |= capability.CapDebug
+		case "trace":
+			caps |= capability.CapTrace
+		default:
+			return "", capability.Capability(0), fmt.Errorf("unknown capability '%s' in %s", c, rawUrl)
+		}
+	}
+
+	return rawUrl[:startIdx], caps, nil
 }

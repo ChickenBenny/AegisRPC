@@ -17,10 +17,10 @@
 
 ## Phase 3: Auto-Discovery
 *Goal: Automatically classify nodes by capability, chain-agnostic design.*
-- [ ] **Task 3.1:** Define `Capability` bitmask (`uint16`) and `Prober` interface.
-- [ ] **Task 3.2:** Implement `EthProber` — probe Archive / Debug / Trace capabilities.
-- [ ] **Task 3.3:** Method-based routing via capability mapping (`debug_*` → CapDebug).
-- [ ] **Task 3.4:** Manual capability annotation via URL syntax (`url[archive,debug]`).
+- [x] **Task 3.1:** Define `Capability` bitmask (`uint16`) and `Prober` interface.
+- [x] **Task 3.2:** Implement `EthProber` — probe Archive / Debug / Trace capabilities.
+- [x] **Task 3.3:** Method-based routing via capability mapping (`debug_*` → CapDebug).
+- [x] **Task 3.4:** Manual capability annotation via URL syntax (`url[archive,debug]`).
 - **Learning:** Ethereum node architecture (State Pruning vs Archive). Interface-driven design for multi-chain extensibility.
 
 ## Phase 4: Performance & Cost Optimization
