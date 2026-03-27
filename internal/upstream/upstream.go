@@ -87,6 +87,8 @@ func NewPool(urls []string) (*Pool, error) {
 	return pool, nil
 }
 
+// Nodes returns the pool's node list for inspection and probe setup.
+// Callers must not modify the returned slice.
 func (p *Pool) Nodes() []*Upstream {
 	return p.nodes
 }
@@ -106,10 +108,12 @@ func (p *Pool) Next() *Upstream {
 
 func (p *Pool) NextWithCapability(required capability.Capability) *Upstream {
 	n := uint64(len(p.nodes))
+	start := p.counter.Load()
 	for i := uint64(0); i < n; i++ {
-		idx := (p.counter.Add(1) - 1) % n
+		idx := (start + i) % n
 		node := p.nodes[idx]
 		if node.IsHealthy() && node.Capabilities().Has(required) {
+			p.counter.Add(i + 1)
 			return node
 		}
 	}

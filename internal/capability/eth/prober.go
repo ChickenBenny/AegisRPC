@@ -54,12 +54,15 @@ func (p *EthProber) Probe(ctx context.Context, nodeURL string) (capability.Capab
 }
 
 func (p *EthProber) sendRPCRequest(ctx context.Context, nodeURL string, method string, params []interface{}) ([]byte, error) {
-	payload, _ := json.Marshal(map[string]interface{}{
+	payload, err := json.Marshal(map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  method,
 		"params":  params,
 	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal RPC request: %w", err)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, nodeURL, bytes.NewReader(payload))
 	if err != nil {
@@ -84,8 +87,10 @@ func (p *EthProber) sendRPCRequest(ctx context.Context, nodeURL string, method s
 }
 
 func (p *EthProber) probeHistorical(ctx context.Context, nodeURL string) (bool, error) {
+	// Zero address at block 1: widely available on all mainnet-compatible chains,
+	// guaranteed to have a trie entry on archive nodes but absent on pruned nodes.
 	body, err := p.sendRPCRequest(ctx, nodeURL, "eth_getBalance", []interface{}{
-		"0xd3CdA913deB6f4967b2Ef3aa68f5A843FcAa641",
+		"0x0000000000000000000000000000000000000000",
 		"0x1",
 	})
 	if err != nil {
@@ -133,8 +138,15 @@ func (p *EthProber) probeDebug(ctx context.Context, nodeURL string) (bool, error
 		return false, err
 	}
 
-	// Only supported if the node returns a result with no error.
-	return resp.Error == nil, nil
+	// -32601 means "method not found" — the namespace is simply not enabled.
+	// Any other error (rate limit, auth, server fault) is ambiguous — surface it.
+	if resp.Error != nil {
+		if resp.Error.Code == -32601 {
+			return false, nil
+		}
+		return false, fmt.Errorf("probeDebug: unexpected RPC error %d: %s", resp.Error.Code, resp.Error.Message)
+	}
+	return true, nil
 }
 
 // probeTrace checks if the node supports the trace_* namespace (Erigon / Nethermind).
@@ -154,5 +166,13 @@ func (p *EthProber) probeTrace(ctx context.Context, nodeURL string) (bool, error
 		return false, err
 	}
 
-	return resp.Error == nil, nil
+	// -32601 means "method not found" — the namespace is simply not enabled.
+	// Any other error (rate limit, auth, server fault) is ambiguous — surface it.
+	if resp.Error != nil {
+		if resp.Error.Code == -32601 {
+			return false, nil
+		}
+		return false, fmt.Errorf("probeTrace: unexpected RPC error %d: %s", resp.Error.Code, resp.Error.Message)
+	}
+	return true, nil
 }
