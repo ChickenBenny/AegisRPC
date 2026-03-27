@@ -17,10 +17,10 @@
 
 ## Phase 3: Auto-Discovery
 *Goal: Automatically classify nodes by capability, chain-agnostic design.*
-- [ ] **Task 3.1:** Define `Capability` bitmask (`uint16`) and `Prober` interface.
-- [ ] **Task 3.2:** Implement `EthProber` — probe Archive / Debug / Trace capabilities.
-- [ ] **Task 3.3:** Method-based routing via capability mapping (`debug_*` → CapDebug).
-- [ ] **Task 3.4:** Manual capability annotation via URL syntax (`url[archive,debug]`).
+- [x] **Task 3.1:** Define `Capability` bitmask (`uint16`) and `Prober` interface.
+- [x] **Task 3.2:** Implement `EthProber` — probe Archive / Debug / Trace capabilities.
+- [x] **Task 3.3:** Method-based routing via capability mapping (`debug_*` → CapDebug).
+- [x] **Task 3.4:** Manual capability annotation via URL syntax (`url[archive,debug]`).
 - **Learning:** Ethereum node architecture (State Pruning vs Archive). Interface-driven design for multi-chain extensibility.
 
 ## Phase 4: Performance & Cost Optimization
@@ -35,6 +35,14 @@
 - [ ] **Task 5.1:** Re-org Aware Cache based on Finality depth.
 - [ ] **Task 5.2:** Virtual WebSockets with transparent upstream failover.
 - **Learning:** Blockchain Finality and Consistency models.
+
+## Phase 5.5: Configuration & Environment
+*Goal: Make all tunable parameters configurable via ENV for Docker / Kubernetes deployment.*
+- [ ] **Task 5.5.1:** Define all configurable parameters (timeouts, thresholds, ports, upstream URLs).
+- [ ] **Task 5.5.2:** Read config from ENV with sensible defaults (`AEGIS_PORT`, `AEGIS_UPSTREAMS`, `AEGIS_PROBE_TIMEOUT`, `AEGIS_LAG_THRESHOLD`, ...).
+- [ ] **Task 5.5.3:** Support config file (YAML/TOML) as an alternative to ENV.
+- [ ] **Task 5.5.4:** Document all ENV variables in README.
+- **Learning:** Twelve-Factor App methodology. Config management in cloud-native services.
 
 ## Phase 6: Observability & Cloud
 *Goal: Monitoring and Deployment.*

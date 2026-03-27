@@ -3,6 +3,7 @@ package upstream
 import (
 	"testing"
 
+	"github.com/ChickenBenny/AegisRPC/internal/capability"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -72,6 +73,63 @@ func TestPoolNext_RoundRobin_SkipsUnhealthy(t *testing.T) {
 	assert.Equal(t, "node1.example.com", pool.Next().URL.Host)
 }
 
+// ---------------------------------------------------------------------------
+// Pool.NextWithCapability
+// ---------------------------------------------------------------------------
+
+func TestPool_NextWithCapability_ReturnsMatchingNode(t *testing.T) {
+	pool, err := NewPool([]string{
+		"https://basic.example.com",
+		"https://debug.example.com",
+	})
+	require.NoError(t, err)
+
+	pool.nodes[0].SetCapabilities(capability.CapBasic)
+	pool.nodes[1].SetCapabilities(capability.CapBasic | capability.CapDebug)
+
+	node := pool.NextWithCapability(capability.CapDebug)
+	require.NotNil(t, node)
+	assert.Equal(t, "debug.example.com", node.URL.Host)
+}
+
+func TestPool_NextWithCapability_NoneQualified_ReturnsNil(t *testing.T) {
+	pool, err := NewPool([]string{"https://basic.example.com"})
+	require.NoError(t, err)
+
+	pool.nodes[0].SetCapabilities(capability.CapBasic)
+
+	assert.Nil(t, pool.NextWithCapability(capability.CapTrace))
+}
+
+func TestPool_NextWithCapability_SkipsUnhealthyNode(t *testing.T) {
+	pool, err := NewPool([]string{
+		"https://debug1.example.com",
+		"https://debug2.example.com",
+	})
+	require.NoError(t, err)
+
+	pool.nodes[0].SetCapabilities(capability.CapBasic | capability.CapDebug)
+	pool.nodes[1].SetCapabilities(capability.CapBasic | capability.CapDebug)
+	pool.nodes[0].SetHealthy(false)
+
+	node := pool.NextWithCapability(capability.CapDebug)
+	require.NotNil(t, node)
+	assert.Equal(t, "debug2.example.com", node.URL.Host)
+}
+
+func TestPool_Nodes_ReturnsAllNodes(t *testing.T) {
+	pool, err := NewPool([]string{
+		"https://node1.example.com",
+		"https://node2.example.com",
+	})
+	require.NoError(t, err)
+
+	nodes := pool.Nodes()
+	assert.Len(t, nodes, 2)
+	assert.Equal(t, "node1.example.com", nodes[0].URL.Host)
+	assert.Equal(t, "node2.example.com", nodes[1].URL.Host)
+}
+
 func TestMarkLaggingNodes_MarksBehindNodes(t *testing.T) {
 	pool, err := NewPool([]string{
 		"https://node1.example.com",
@@ -121,4 +179,93 @@ func TestMarkLaggingNodes_WithinThreshold(t *testing.T) {
 
 	assert.True(t, pool.nodes[0].IsHealthy())
 	assert.True(t, pool.nodes[1].IsHealthy(), "node2 is within threshold, should stay healthy")
+}
+
+// ---------------------------------------------------------------------------
+// ParseAnnotatedURL — parses "https://host[cap1,cap2]" into URL + Capability
+// ---------------------------------------------------------------------------
+
+func TestParseAnnotatedURL_NoAnnotation(t *testing.T) {
+	url, caps, err := ParseAnnotatedURL("https://node.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, "https://node.example.com", url)
+	assert.Equal(t, capability.Capability(0), caps, "no annotation means caps not set (prober will handle)")
+}
+
+func TestParseAnnotatedURL_Debug(t *testing.T) {
+	url, caps, err := ParseAnnotatedURL("https://node.example.com[debug]")
+	require.NoError(t, err)
+	assert.Equal(t, "https://node.example.com", url)
+	assert.Equal(t, capability.CapBasic|capability.CapDebug, caps)
+}
+
+func TestParseAnnotatedURL_Trace(t *testing.T) {
+	url, caps, err := ParseAnnotatedURL("https://node.example.com[trace]")
+	require.NoError(t, err)
+	assert.Equal(t, "https://node.example.com", url)
+	assert.Equal(t, capability.CapBasic|capability.CapTrace, caps)
+}
+
+func TestParseAnnotatedURL_Historical(t *testing.T) {
+	url, caps, err := ParseAnnotatedURL("https://node.example.com[historical]")
+	require.NoError(t, err)
+	assert.Equal(t, "https://node.example.com", url)
+	assert.Equal(t, capability.CapBasic|capability.CapHistorical, caps)
+}
+
+func TestParseAnnotatedURL_MultipleCaps(t *testing.T) {
+	url, caps, err := ParseAnnotatedURL("https://node.example.com[debug,trace]")
+	require.NoError(t, err)
+	assert.Equal(t, "https://node.example.com", url)
+	assert.Equal(t, capability.CapBasic|capability.CapDebug|capability.CapTrace, caps)
+}
+
+func TestParseAnnotatedURL_TrimsSpaces(t *testing.T) {
+	url, caps, err := ParseAnnotatedURL("https://node.example.com[debug, trace]")
+	require.NoError(t, err)
+	assert.Equal(t, "https://node.example.com", url)
+	assert.Equal(t, capability.CapBasic|capability.CapDebug|capability.CapTrace, caps)
+}
+
+func TestParseAnnotatedURL_UnknownCap_ReturnsError(t *testing.T) {
+	_, _, err := ParseAnnotatedURL("https://node.example.com[unknown]")
+	require.Error(t, err)
+}
+
+func TestParseAnnotatedURL_EmptyBrackets_ReturnsError(t *testing.T) {
+	_, _, err := ParseAnnotatedURL("https://node.example.com[]")
+	require.Error(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// NewPool — annotated URLs set capabilities on nodes
+// ---------------------------------------------------------------------------
+
+func TestNewPool_AnnotatedURL_SetsCapabilities(t *testing.T) {
+	pool, err := NewPool([]string{
+		"https://debug.example.com[debug]",
+		"https://trace.example.com[trace]",
+	})
+	require.NoError(t, err)
+
+	nodes := pool.Nodes()
+	assert.Equal(t, capability.CapBasic|capability.CapDebug, nodes[0].Capabilities())
+	assert.Equal(t, capability.CapBasic|capability.CapTrace, nodes[1].Capabilities())
+}
+
+func TestNewPool_MixedAnnotated_UnannotatedHasZeroCaps(t *testing.T) {
+	pool, err := NewPool([]string{
+		"https://plain.example.com",
+		"https://debug.example.com[debug]",
+	})
+	require.NoError(t, err)
+
+	nodes := pool.Nodes()
+	assert.Equal(t, capability.Capability(0), nodes[0].Capabilities(), "unannotated node caps should be 0")
+	assert.Equal(t, capability.CapBasic|capability.CapDebug, nodes[1].Capabilities())
+}
+
+func TestNewPool_InvalidAnnotation_ReturnsError(t *testing.T) {
+	_, err := NewPool([]string{"https://node.example.com[bad_cap]"})
+	require.Error(t, err)
 }
