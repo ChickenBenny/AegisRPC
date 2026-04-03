@@ -2,7 +2,9 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -58,7 +60,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := cache.CacheKey(req.Method, req.Params)
 
 	// Negative cache hit: upstream was recently unhealthy, fail fast.
-	if _, ok := h.cache.Get(key + "::err"); ok {
+	if _, ok := h.cache.Get("neg::" + key); ok {
 		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
 	}
@@ -74,7 +76,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	v, err, _ := h.sf.Do(key, func() (any, error) {
 		resp, err := h.fetchFromUpstream(r, body)
 		if err != nil {
-			h.cache.Set(key+"::err", []byte(err.Error()), 1*time.Second)
+			h.cache.Set("neg::"+key, []byte(err.Error()), 1*time.Second)
 			return nil, err
 		}
 		// Store result in cache with appropriate TTL.
@@ -118,11 +120,13 @@ func (h *Handler) proxyDirect(w http.ResponseWriter, r *http.Request, body []byt
 func (h *Handler) fetchFromUpstream(r *http.Request, body []byte) ([]byte, error) {
 	node := h.pool.Next()
 	if node == nil {
-		return nil, io.ErrUnexpectedEOF
+		return nil, errors.New("no healthy upstream available")
 	}
 
-	// Clone the request so we can set a fresh body.
-	outReq := r.Clone(r.Context())
+	// Clone the request with a detached context so that a single caller
+	// cancelling their request does not abort the shared singleflight call
+	// and fail all coalesced callers.
+	outReq := r.Clone(context.WithoutCancel(r.Context()))
 	outReq.Body = io.NopCloser(bytes.NewReader(body))
 	outReq.ContentLength = int64(len(body))
 
@@ -148,6 +152,7 @@ type bufResponseWriter struct {
 	body   bytes.Buffer
 }
 
-func (b *bufResponseWriter) Header() http.Header        { return b.header }
-func (b *bufResponseWriter) WriteHeader(code int)       { b.status = code }
+func (b *bufResponseWriter) Header() http.Header         { return b.header }
+func (b *bufResponseWriter) WriteHeader(code int)        { b.status = code }
 func (b *bufResponseWriter) Write(p []byte) (int, error) { return b.body.Write(p) }
+func (b *bufResponseWriter) Flush()                      {} // no-op for in-memory buffer

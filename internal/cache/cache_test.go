@@ -94,6 +94,47 @@ func TestCache_Size(t *testing.T) {
 	assert.Equal(t, 1, c.Size())
 }
 
+// ─── LRU eviction ────────────────────────────────────────────────────────
+
+func TestCache_LRU_EvictsWhenAtCap(t *testing.T) {
+	c := NewCache(context.Background(), time.Minute, 3)
+	c.Set("a", []byte("1"), 0)
+	c.Set("b", []byte("2"), 0)
+	c.Set("c", []byte("3"), 0)
+	assert.Equal(t, 3, c.Size())
+
+	// Adding a fourth entry should evict "a" (LRU).
+	c.Set("d", []byte("4"), 0)
+	assert.Equal(t, 3, c.Size())
+	_, ok := c.Get("a")
+	assert.False(t, ok, "LRU entry should have been evicted")
+}
+
+func TestCache_LRU_GetPromotesEntry(t *testing.T) {
+	c := NewCache(context.Background(), time.Minute, 3)
+	c.Set("a", []byte("1"), 0)
+	c.Set("b", []byte("2"), 0)
+	c.Set("c", []byte("3"), 0)
+
+	// Touch "a" so it becomes most-recently-used; "b" is now LRU.
+	c.Get("a")
+	c.Set("d", []byte("4"), 0)
+
+	_, aOk := c.Get("a")
+	_, bOk := c.Get("b")
+	assert.True(t, aOk, "recently accessed entry should survive eviction")
+	assert.False(t, bOk, "LRU entry should have been evicted")
+}
+
+func TestCache_LRU_ZeroCap_Unlimited(t *testing.T) {
+	c := NewCache(context.Background(), time.Minute, 0)
+	for i := range 200 {
+		c.Set(string(rune('a'+i%26))+string(rune(i)), []byte("v"), 0)
+	}
+	// No eviction limit — size should be at least 100.
+	assert.GreaterOrEqual(t, c.Size(), 100)
+}
+
 // ─── CacheKey ─────────────────────────────────────────────────────────────
 
 func TestCacheKey_SameMethodAndParams(t *testing.T) {

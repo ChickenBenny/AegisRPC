@@ -21,7 +21,8 @@ func main() {
 	// 1. Parse command line flags
 	port := flag.Int("port", 8080, "The port to listen on")
 	upstreams := flag.String("upstreams", "https://eth.llamarpc.com", "Comma-separated list of upstream RPC URLs")
-	mutableTTL := flag.Duration("mutable-ttl", 12*time.Second, "TTL for mutable cached responses (e.g. eth_blockNumber)")
+	mutableTTL     := flag.Duration("mutable-ttl", 12*time.Second, "TTL for mutable cached responses (e.g. eth_blockNumber)")
+	maxCacheEntries := flag.Int("max-cache-entries", 10_000, "LRU cap for the response cache (0 = unlimited)")
 	flag.Parse()
 
 	// 2. Build upstream pool
@@ -46,7 +47,7 @@ func main() {
 	pool.StartHealthChecks(ctx, 15*time.Second, 10)
 
 	// 5. Build cache + handler (Phase 4)
-	c := cache.NewCache(ctx, 5*time.Minute)
+	c := cache.NewCache(ctx, 5*time.Minute, *maxCacheEntries)
 	h := proxy.NewHandler(pool, c, *mutableTTL)
 
 	// 6. Set up the mux — enforce POST-only at the edge
