@@ -25,9 +25,9 @@
 
 ## Phase 4: Performance & Cost Optimization
 *Goal: Save RPC provider bills.*
-- [ ] **Task 4.1:** SingleFlight mode to coalesce concurrent identical requests.
-- [ ] **Task 4.2:** In-memory Cache for immutable data (transactions, blocks).
-- [ ] **Task 4.3:** Data-layered caching (Mutable vs Immutable).
+- [x] **Task 4.1:** SingleFlight mode to coalesce concurrent identical requests.
+- [x] **Task 4.2:** In-memory Cache for immutable data (transactions, blocks).
+- [x] **Task 4.3:** Data-layered caching (Mutable vs Immutable).
 - **Learning:** Concurrency patterns (SingleFlight) and Cache Invalidation.
 
 ## Phase 5: Advanced Consistency
