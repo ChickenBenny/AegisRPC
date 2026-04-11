@@ -17,7 +17,8 @@ var healthCheckPayload = []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","pa
 
 // StartHealthChecks polls every node in the pool on the given interval.
 // Nodes lagging more than lagThreshold blocks behind the best node are marked unhealthy.
-func (p *Pool) StartHealthChecks(ctx context.Context, interval time.Duration, lagThreshold uint64) {
+// The optional onHeadUpdate callbacks are invoked after each round with the best observed block height.
+func (p *Pool) StartHealthChecks(ctx context.Context, interval time.Duration, lagThreshold uint64, onHeadUpdate ...func(uint64)) {
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -35,7 +36,10 @@ func (p *Pool) StartHealthChecks(ctx context.Context, interval time.Duration, la
 					}(node)
 				}
 				wg.Wait()
-				p.markLaggingNodes(lagThreshold)
+				bestHeight := p.markLaggingNodes(lagThreshold)
+				for _, cb := range onHeadUpdate {
+					cb(bestHeight)
+				}
 			}
 		}
 	}()
