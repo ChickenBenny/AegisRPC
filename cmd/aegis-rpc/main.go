@@ -54,8 +54,9 @@ func main() {
 	c := cache.NewCache(ctx, 5*time.Minute, *maxCacheEntries)
 	h := proxy.NewHandler(pool, c, *mutableTTL, fc)
 
-	// 6. Set up the mux — enforce POST-only at the edge
+	// 6. Set up the mux.
 	mux := http.NewServeMux()
+	// HTTP JSON-RPC: enforce POST-only.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -63,6 +64,8 @@ func main() {
 		}
 		h.ServeHTTP(w, r)
 	})
+	// WebSocket JSON-RPC: virtual session with transparent upstream failover.
+	mux.HandleFunc("/ws", proxy.ServeWS(pool))
 
 	// 7. Start server
 	srv := &http.Server{
