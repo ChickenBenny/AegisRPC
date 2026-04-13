@@ -422,42 +422,21 @@ func TestServeWS_ContextCancel_ClosesSession(t *testing.T) {
 		conn.ReadMessage()
 	})
 
-	// Create a loopback WS pair to use as the client connection.
-	clientConnCh := make(chan *websocket.Conn, 1)
-	clientSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		clientConnCh <- conn
-		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-		conn.ReadMessage()
-	}))
-	t.Cleanup(clientSrv.Close)
-
-	// Dial to get the "client" side of the pair (what the session uses).
-	clientWS := "ws" + strings.TrimPrefix(clientSrv.URL, "http")
-	_, _, err := websocket.DefaultDialer.Dial(clientWS, nil)
-	require.NoError(t, err)
-	serverSideConn := <-clientConnCh
-
-	pool := poolWithURL(t, upstreamURL)
 	ctx, cancel := context.WithCancel(context.Background())
 
-	sess := &wsSession{
-		pool:       pool,
-		client:     serverSideConn, // the session's "client" conn
-		subs:       make(map[string]*subscription),
-		upToClient: make(map[string]string),
-		pending:    make(map[string]json.RawMessage),
-	}
+	sess := newTestSession()
 
 	upConn, _, err := websocket.DefaultDialer.Dial(upstreamURL, nil)
 	require.NoError(t, err)
+	t.Cleanup(func() { upConn.Close() })
+
+	// pump no longer reads s.client directly; supply channels that never produce.
+	fromClient := make(chan clientFrame)
+	clientGone := make(chan struct{})
 
 	done := make(chan bool, 1)
 	go func() {
-		done <- sess.pump(ctx, upConn)
+		done <- sess.pump(ctx, upConn, fromClient, clientGone)
 	}()
 
 	cancel()

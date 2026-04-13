@@ -39,6 +39,12 @@ type wsSession struct {
 	pending    map[string]json.RawMessage // raw request ID → subscribe params (awaiting response)
 }
 
+// clientFrame is one WebSocket frame received from the client.
+type clientFrame struct {
+	mt  int
+	msg []byte
+}
+
 func newWSSession(pool *upstream.Pool, client *websocket.Conn) *wsSession {
 	return &wsSession{
 		pool:       pool,
@@ -65,7 +71,29 @@ func ServeWS(pool *upstream.Pool) http.HandlerFunc {
 
 // run is the session main loop. It connects to an upstream, pumps messages bidirectionally,
 // and reconnects transparently whenever the upstream drops.
+//
+// A single goroutine owns s.client reads for the entire session lifetime, ensuring
+// gorilla/websocket's "one concurrent reader" contract is never violated across reconnects.
 func (s *wsSession) run(ctx context.Context) {
+	// fromClient carries frames from the client to the current upstream.
+	// clientGone is closed when the client disconnects.
+	fromClient := make(chan clientFrame, 8)
+	clientGone := make(chan struct{})
+	go func() {
+		defer close(clientGone)
+		for {
+			mt, msg, err := s.client.ReadMessage()
+			if err != nil {
+				return
+			}
+			select {
+			case fromClient <- clientFrame{mt, msg}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	for {
 		up, err := s.connectUpstream()
 		if err != nil {
@@ -81,7 +109,7 @@ func (s *wsSession) run(ctx context.Context) {
 			continue
 		}
 
-		clientLeft := s.pump(ctx, up)
+		clientLeft := s.pump(ctx, up, fromClient, clientGone)
 		up.Close()
 
 		if clientLeft {
@@ -153,25 +181,13 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 	return nil
 }
 
-// pump reads from both the client and the upstream concurrently.
-// Returns true if the client disconnected, false if the upstream dropped.
-func (s *wsSession) pump(ctx context.Context, up *websocket.Conn) (clientLeft bool) {
-	clientDone := make(chan struct{})
+// pump bridges messages between the client (via fromClient channel) and the upstream (up).
+// Returns true if the client disconnected or ctx was cancelled, false if the upstream dropped.
+//
+// s.client is never read here; the caller (run) owns the sole s.client reader goroutine,
+// which prevents concurrent reads across reconnections.
+func (s *wsSession) pump(ctx context.Context, up *websocket.Conn, fromClient <-chan clientFrame, clientGone <-chan struct{}) (clientLeft bool) {
 	upDone := make(chan struct{})
-
-	// client → upstream
-	go func() {
-		defer close(clientDone)
-		for {
-			mt, msg, err := s.client.ReadMessage()
-			if err != nil {
-				return
-			}
-			if err := s.forwardToUpstream(msg, mt, up); err != nil {
-				return
-			}
-		}
-	}()
 
 	// upstream → client
 	go func() {
@@ -187,13 +203,23 @@ func (s *wsSession) pump(ctx context.Context, up *websocket.Conn) (clientLeft bo
 		}
 	}()
 
-	select {
-	case <-clientDone:
-		return true
-	case <-upDone:
-		return false
-	case <-ctx.Done():
-		return true
+	// client → upstream (via channel; no direct read of s.client here)
+	for {
+		select {
+		case <-upDone:
+			return false
+		case <-clientGone:
+			return true
+		case <-ctx.Done():
+			return true
+		case f, ok := <-fromClient:
+			if !ok {
+				return true
+			}
+			if err := s.forwardToUpstream(f.msg, f.mt, up); err != nil {
+				return false
+			}
+		}
 	}
 }
 
