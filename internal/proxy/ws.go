@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ChickenBenny/AegisRPC/internal/upstream"
 	"github.com/gorilla/websocket"
@@ -55,6 +55,17 @@ func newWSSession(pool *upstream.Pool, client *websocket.Conn) *wsSession {
 	}
 }
 
+// clientWriteTimeout is the maximum time allowed for a single write to the client.
+// If the client's TCP window is full for longer than this, the session is terminated
+// so a stalled client cannot block the upstream reader goroutine indefinitely.
+const clientWriteTimeout = 10 * time.Second
+
+// writeToClient sends a WebSocket frame to the client with a write deadline.
+func (s *wsSession) writeToClient(mt int, msg []byte) error {
+	s.client.SetWriteDeadline(time.Now().Add(clientWriteTimeout))
+	return s.client.WriteMessage(mt, msg)
+}
+
 // ServeWS returns an http.HandlerFunc that upgrades the connection to WebSocket
 // and runs a virtual session backed by the upstream pool.
 func ServeWS(pool *upstream.Pool) http.HandlerFunc {
@@ -98,7 +109,7 @@ func (s *wsSession) run(ctx context.Context) {
 		up, err := s.connectUpstream()
 		if err != nil {
 			log.Printf("[ws] no upstream available: %v", err)
-			_ = s.client.WriteMessage(websocket.CloseMessage,
+			_ = s.writeToClient(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "no upstream"))
 			return
 		}
@@ -140,9 +151,12 @@ func (s *wsSession) connectUpstream() (*websocket.Conn, error) {
 	return nil, fmt.Errorf("no reachable upstream")
 }
 
-// replaySubscriptions re-sends every known subscription to a fresh upstream connection.
-// It reads each response synchronously (before the bidirectional pump starts) and updates
-// the upstreamID mapping so that future notifications are remapped correctly.
+// replaySubscriptions re-sends every known subscription to a fresh upstream connection
+// and updates the upstreamID mapping so that future notifications are remapped correctly.
+//
+// All subscribe requests are sent first, then responses are collected using a pending map.
+// This tolerates upstreams that push early eth_subscription notifications before the
+// subscribe response arrives (e.g. Erigon), and correctly handles out-of-order responses.
 func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 	s.mu.Lock()
 	subs := make([]*subscription, 0, len(s.subs))
@@ -151,24 +165,64 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 	}
 	s.mu.Unlock()
 
+	if len(subs) == 0 {
+		return nil
+	}
+
+	// pendingReplay maps each replay request ID to its subscription so responses
+	// can be matched out-of-order.
+	pendingReplay := make(map[string]*subscription, len(subs))
+
+	// Phase 1: send all subscribe requests at once.
 	for _, sub := range subs {
+		replayID := "replay:" + sub.clientID
 		req, _ := json.Marshal(map[string]any{
 			"jsonrpc": "2.0",
-			"id":      "replay:" + sub.clientID,
+			"id":      replayID,
 			"method":  "eth_subscribe",
 			"params":  sub.subscribeParams,
 		})
 		if err := up.WriteMessage(websocket.TextMessage, req); err != nil {
 			return fmt.Errorf("write replay: %w", err)
 		}
+		pendingReplay[replayID] = sub
+	}
+
+	// Phase 2: collect responses. Apply a deadline so we never hang indefinitely.
+	up.SetReadDeadline(time.Now().Add(30 * time.Second))
+	defer up.SetReadDeadline(time.Time{})
+
+	for len(pendingReplay) > 0 {
 		_, msg, err := up.ReadMessage()
 		if err != nil {
 			return fmt.Errorf("read replay response: %w", err)
 		}
+
 		var resp struct {
-			Result string `json:"result"`
+			ID     json.RawMessage `json:"id"`
+			Result string          `json:"result"`
+			Err    json.RawMessage `json:"error"`
 		}
-		if err := json.Unmarshal(msg, &resp); err != nil || resp.Result == "" {
+		if err := json.Unmarshal(msg, &resp); err != nil {
+			continue // unparseable frame; skip
+		}
+
+		// Match using the string ID we sent ("replay:<clientID>").
+		var idStr string
+		if json.Unmarshal(resp.ID, &idStr) != nil {
+			continue // numeric or null ID — not a replay response; skip
+		}
+		sub, ok := pendingReplay[idStr]
+		if !ok {
+			// Early eth_subscription notification or unrelated response — skip.
+			// The bidirectional pump will forward such frames once it starts.
+			continue
+		}
+
+		if len(resp.Err) > 0 && string(resp.Err) != "null" {
+			return fmt.Errorf("replay: upstream error for %s: %s", sub.clientID, resp.Err)
+		}
+		if resp.Result == "" {
 			return fmt.Errorf("replay: unexpected response %s", msg)
 		}
 
@@ -177,6 +231,7 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 		sub.upstreamID = resp.Result
 		s.upToClient[resp.Result] = sub.clientID
 		s.mu.Unlock()
+		delete(pendingReplay, idStr)
 	}
 	return nil
 }
@@ -256,19 +311,31 @@ func (s *wsSession) forwardToClient(msg []byte, mt int) error {
 		} `json:"params"`
 	}
 	if err := json.Unmarshal(msg, &envelope); err != nil {
-		return s.client.WriteMessage(mt, msg)
+		return s.writeToClient(mt, msg)
 	}
 
 	// Subscription notification: remap upstreamID → clientID when they differ (post-failover).
+	// We unmarshal → edit params.subscription → re-marshal to avoid unsafe string substitution
+	// that could accidentally match an unrelated field with the same value as the upstream ID.
 	if envelope.Method == "eth_subscription" && envelope.Params != nil {
 		upID := envelope.Params.Subscription
 		s.mu.Lock()
 		clientID, ok := s.upToClient[upID]
 		s.mu.Unlock()
 		if ok && clientID != upID {
-			msg = bytes.Replace(msg, []byte(`"`+upID+`"`), []byte(`"`+clientID+`"`), 1)
+			var notif map[string]json.RawMessage
+			if err := json.Unmarshal(msg, &notif); err == nil {
+				var params map[string]json.RawMessage
+				if err := json.Unmarshal(notif["params"], &params); err == nil {
+					params["subscription"], _ = json.Marshal(clientID)
+					notif["params"], _ = json.Marshal(params)
+					if rewritten, err := json.Marshal(notif); err == nil {
+						msg = rewritten
+					}
+				}
+			}
 		}
-		return s.client.WriteMessage(mt, msg)
+		return s.writeToClient(mt, msg)
 	}
 
 	// Response to eth_subscribe: record the new subscription using the upstream-assigned ID.
@@ -297,7 +364,7 @@ func (s *wsSession) forwardToClient(msg []byte, mt int) error {
 		}
 	}
 
-	return s.client.WriteMessage(mt, msg)
+	return s.writeToClient(mt, msg)
 }
 
 // rewriteUnsubscribe replaces the client's subscription ID with the current upstream ID,
@@ -317,6 +384,13 @@ func (s *wsSession) rewriteUnsubscribe(msg []byte) []byte {
 	s.mu.Lock()
 	sub, ok := s.subs[clientID]
 	if ok {
+		// Eagerly clean up before forwarding to the upstream. The subscription is
+		// effectively gone from the client's perspective the moment it sends
+		// eth_unsubscribe. If the message fails to reach the upstream during a
+		// concurrent failover, the upstream may push a few stray notifications;
+		// because upToClient no longer maps the upstreamID, those frames will be
+		// passed through to the client as-is. The client can safely ignore them
+		// since it already knows the subscription is cancelled.
 		delete(s.upToClient, sub.upstreamID)
 		delete(s.subs, clientID)
 	}
