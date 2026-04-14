@@ -120,8 +120,9 @@ func (p *Pool) NextWithCapability(required capability.Capability) *Upstream {
 	return nil
 }
 
-// markLaggingNodes marks nodes unhealthy if they lag behind the best node by more than threshold blocks.
-func (p *Pool) markLaggingNodes(threshold uint64) {
+// markLaggingNodes marks nodes unhealthy if they lag behind the best node by more than threshold
+// blocks. It returns the best observed block height across all healthy nodes.
+func (p *Pool) markLaggingNodes(threshold uint64) uint64 {
 	var maxHeight uint64
 	for _, node := range p.nodes {
 		if node.IsHealthy() && node.BlockHeight() > maxHeight {
@@ -134,6 +135,7 @@ func (p *Pool) markLaggingNodes(threshold uint64) {
 			node.SetHealthy(false)
 		}
 	}
+	return maxHeight
 }
 
 func ParseAnnotatedURL(rawUrl string) (string, capability.Capability, error) {

@@ -18,18 +18,20 @@ import (
 )
 
 // Handler is an http.Handler that proxies JSON-RPC requests to upstream nodes
-// with integrated caching and singleflight coalescing.
+// with integrated caching, singleflight coalescing, and finality-aware classification.
 type Handler struct {
 	pool       *upstream.Pool
 	cache      *cache.Cache
+	finality   *cache.FinalityChecker
 	sf         singleflight.Group
 	mutableTTL time.Duration
 }
 
-func NewHandler(pool *upstream.Pool, c *cache.Cache, mutableTTL time.Duration) *Handler {
+func NewHandler(pool *upstream.Pool, c *cache.Cache, mutableTTL time.Duration, fc *cache.FinalityChecker) *Handler {
 	return &Handler{
 		pool:       pool,
 		cache:      c,
+		finality:   fc,
 		mutableTTL: mutableTTL,
 	}
 }
@@ -49,7 +51,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	layer := cache.Classify(req.Method)
+	layer := h.finality.Classify(req.Method, req.Params)
 
 	// Uncacheable: bypass cache entirely.
 	if layer == cache.LayerUncacheable {

@@ -24,7 +24,8 @@ func newHandler(t *testing.T, upstreamURL string, mutableTTL time.Duration) *Han
 	pool, err := upstream.NewPool([]string{upstreamURL})
 	require.NoError(t, err)
 	pool.Nodes()[0].SetCapabilities(capability.CapBasic)
-	return NewHandler(pool, cache.NewCache(context.Background(), time.Minute), mutableTTL)
+	fc := cache.NewFinalityChecker(12)
+	return NewHandler(pool, cache.NewCache(context.Background(), time.Minute), mutableTTL, fc)
 }
 
 // rpcRequest builds a raw JSON-RPC POST request.

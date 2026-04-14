@@ -32,9 +32,15 @@
 
 ## Phase 5: Advanced Consistency
 *Goal: Handle Re-orgs and WebSockets.*
-- [ ] **Task 5.1:** Re-org Aware Cache based on Finality depth.
-- [ ] **Task 5.2:** Virtual WebSockets with transparent upstream failover.
+- [x] **Task 5.1:** Re-org Aware Cache based on Finality depth.
+- [x] **Task 5.2:** Virtual WebSockets with transparent upstream failover.
 - **Learning:** Blockchain Finality and Consistency models.
+
+## Phase 5.3: WebSocket Reliability
+*Goal: Prevent zombie connections from silently stalling active WebSocket sessions.*
+- [ ] **Task 5.3.1:** Upstream ping/pong heartbeat — send a WebSocket Ping to the upstream every 30s; if no Pong within 10s, treat the connection as dead and trigger failover.
+- [ ] **Task 5.3.2:** Fix `replaySubscriptions` ordering assumption — batch all replay requests first, then collect responses by ID (skip early notifications); handles nodes that push notifications before the subscribe response arrives.
+- **Learning:** RFC 6455 WebSocket Ping/Pong keepalive. TCP half-open / zombie connection problem in cloud environments.
 
 ## Phase 5.5: Configuration & Environment
 *Goal: Make all tunable parameters configurable via ENV for Docker / Kubernetes deployment.*

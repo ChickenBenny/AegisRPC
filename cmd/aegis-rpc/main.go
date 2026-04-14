@@ -19,10 +19,11 @@ import (
 
 func main() {
 	// 1. Parse command line flags
-	port := flag.Int("port", 8080, "The port to listen on")
-	upstreams := flag.String("upstreams", "https://eth.llamarpc.com", "Comma-separated list of upstream RPC URLs")
-	mutableTTL     := flag.Duration("mutable-ttl", 12*time.Second, "TTL for mutable cached responses (e.g. eth_blockNumber)")
+	port            := flag.Int("port", 8080, "The port to listen on")
+	upstreams       := flag.String("upstreams", "https://eth.llamarpc.com", "Comma-separated list of upstream RPC URLs")
+	mutableTTL      := flag.Duration("mutable-ttl", 12*time.Second, "TTL for mutable cached responses (e.g. eth_blockNumber)")
 	maxCacheEntries := flag.Int("max-cache-entries", 10_000, "LRU cap for the response cache (0 = unlimited)")
+	finalityDepth   := flag.Uint64("finality-depth", 12, "Number of confirmations required before a block is considered finalized")
 	flag.Parse()
 
 	// 2. Build upstream pool
@@ -43,15 +44,19 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// 4. Start background health checks
-	pool.StartHealthChecks(ctx, 15*time.Second, 10)
+	// 4. Build finality checker and start background health checks.
+	// The health poller drives SetHead so the checker always tracks the live chain tip.
+	fc := cache.NewFinalityChecker(*finalityDepth)
+	pool.StartHealthChecks(ctx, 15*time.Second, 10, fc.SetHead)
+	log.Printf("Finality depth: %d blocks", *finalityDepth)
 
-	// 5. Build cache + handler (Phase 4)
+	// 5. Build cache + handler
 	c := cache.NewCache(ctx, 5*time.Minute, *maxCacheEntries)
-	h := proxy.NewHandler(pool, c, *mutableTTL)
+	h := proxy.NewHandler(pool, c, *mutableTTL, fc)
 
-	// 6. Set up the mux — enforce POST-only at the edge
+	// 6. Set up the mux.
 	mux := http.NewServeMux()
+	// HTTP JSON-RPC: enforce POST-only.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -59,6 +64,8 @@ func main() {
 		}
 		h.ServeHTTP(w, r)
 	})
+	// WebSocket JSON-RPC: virtual session with transparent upstream failover.
+	mux.HandleFunc("/ws", proxy.ServeWS(pool))
 
 	// 7. Start server
 	srv := &http.Server{
