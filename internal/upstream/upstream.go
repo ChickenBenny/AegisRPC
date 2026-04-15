@@ -30,6 +30,12 @@ func NewUpstream(rawURL string) (*Upstream, error) {
 		return nil, err
 	}
 
+	// Unannotated nodes get CapBasic so NextWithCapability(CapBasic) can route
+	// to them. Annotated nodes already encode their capabilities explicitly.
+	if caps == 0 {
+		caps = capability.CapBasic
+	}
+
 	return &Upstream{URL: u, healthy: true, capabilities: caps}, nil
 }
 
