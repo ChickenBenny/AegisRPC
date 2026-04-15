@@ -12,6 +12,7 @@ import (
 
 	"github.com/ChickenBenny/AegisRPC/internal/cache"
 	"github.com/ChickenBenny/AegisRPC/internal/capability"
+	"github.com/ChickenBenny/AegisRPC/internal/router"
 	"github.com/ChickenBenny/AegisRPC/internal/upstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,7 +26,8 @@ func newHandler(t *testing.T, upstreamURL string, mutableTTL time.Duration) *Han
 	require.NoError(t, err)
 	pool.Nodes()[0].SetCapabilities(capability.CapBasic)
 	fc := cache.NewFinalityChecker(12)
-	return NewHandler(pool, cache.NewCache(context.Background(), time.Minute), mutableTTL, fc)
+	rtr := router.New(pool)
+	return NewHandler(rtr, cache.NewCache(context.Background(), time.Minute), mutableTTL, fc)
 }
 
 // rpcRequest builds a raw JSON-RPC POST request.

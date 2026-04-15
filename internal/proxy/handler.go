@@ -13,7 +13,7 @@ import (
 
 	"github.com/ChickenBenny/AegisRPC/internal/cache"
 	"github.com/ChickenBenny/AegisRPC/internal/models"
-	"github.com/ChickenBenny/AegisRPC/internal/upstream"
+	"github.com/ChickenBenny/AegisRPC/internal/router"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -27,16 +27,16 @@ func (e *rateLimitedError) Error() string { return "upstream rate limited" }
 // Handler is an http.Handler that proxies JSON-RPC requests to upstream nodes
 // with integrated caching, singleflight coalescing, and finality-aware classification.
 type Handler struct {
-	pool       *upstream.Pool
+	router     *router.Router
 	cache      *cache.Cache
 	finality   *cache.FinalityChecker
 	sf         singleflight.Group
 	mutableTTL time.Duration
 }
 
-func NewHandler(pool *upstream.Pool, c *cache.Cache, mutableTTL time.Duration, fc *cache.FinalityChecker) *Handler {
+func NewHandler(rtr *router.Router, c *cache.Cache, mutableTTL time.Duration, fc *cache.FinalityChecker) *Handler {
 	return &Handler{
-		pool:       pool,
+		router:     rtr,
 		cache:      c,
 		finality:   fc,
 		mutableTTL: mutableTTL,
@@ -62,7 +62,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Uncacheable: bypass cache entirely.
 	if layer == cache.LayerUncacheable {
-		h.proxyDirect(w, r, body)
+		h.proxyDirect(w, r, body, req.Method)
 		return
 	}
 
@@ -83,7 +83,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Cache miss: use singleflight to ensure only one upstream call per key.
 	v, err, _ := h.sf.Do(key, func() (any, error) {
-		resp, err := h.fetchFromUpstream(r, body)
+		resp, err := h.fetchFromUpstream(r, body, req.Method)
 		if err != nil {
 			var rl *rateLimitedError
 		if !errors.As(err, &rl) {
@@ -118,13 +118,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // proxyDirect forwards the request to the upstream without any caching.
-// It tries every healthy node before giving up, buffering each response so
+// It tries every capable healthy node before giving up, buffering each response so
 // that headers are never written to w until a successful response is found.
-func (h *Handler) proxyDirect(w http.ResponseWriter, r *http.Request, body []byte) {
-	n := len(h.pool.Nodes())
+func (h *Handler) proxyDirect(w http.ResponseWriter, r *http.Request, body []byte, method string) {
+	n := len(h.router.Nodes())
 	for i := 0; i < n; i++ {
-		node := h.pool.Next()
-		if node == nil {
+		node, err := h.router.Route(method)
+		if err != nil || node == nil {
 			break
 		}
 
@@ -160,18 +160,18 @@ func (h *Handler) proxyDirect(w http.ResponseWriter, r *http.Request, body []byt
 }
 
 // fetchFromUpstream sends the request to an upstream node and returns the raw
-// response body. It tries every healthy node in the pool before giving up, so
+// response body. It tries every capable healthy node before giving up, so
 // a node that is marked healthy but fails the live request does not abort the call.
-func (h *Handler) fetchFromUpstream(r *http.Request, body []byte) ([]byte, error) {
+func (h *Handler) fetchFromUpstream(r *http.Request, body []byte, method string) ([]byte, error) {
 	// Clone once with a detached context so a single caller cancelling their
 	// request does not abort the shared singleflight call and fail all
 	// coalesced callers.
 	baseReq := r.Clone(context.WithoutCancel(r.Context()))
 
-	n := len(h.pool.Nodes())
+	n := len(h.router.Nodes())
 	for i := 0; i < n; i++ {
-		node := h.pool.Next()
-		if node == nil {
+		node, err := h.router.Route(method)
+		if err != nil || node == nil {
 			break
 		}
 

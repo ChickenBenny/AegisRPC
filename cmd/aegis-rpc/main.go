@@ -14,6 +14,7 @@ import (
 
 	"github.com/ChickenBenny/AegisRPC/internal/cache"
 	"github.com/ChickenBenny/AegisRPC/internal/proxy"
+	"github.com/ChickenBenny/AegisRPC/internal/router"
 	"github.com/ChickenBenny/AegisRPC/internal/upstream"
 )
 
@@ -52,7 +53,8 @@ func main() {
 
 	// 5. Build cache + handler
 	c := cache.NewCache(ctx, 5*time.Minute, *maxCacheEntries)
-	h := proxy.NewHandler(pool, c, *mutableTTL, fc)
+	rtr := router.New(pool)
+	h := proxy.NewHandler(rtr, c, *mutableTTL, fc)
 
 	// 6. Set up the mux.
 	mux := http.NewServeMux()
