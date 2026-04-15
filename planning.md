@@ -80,23 +80,27 @@
 ## Fix: Bug Sweep (`fix/bug-sweep`)
 *Goal: Fix real bugs discovered by a full-project scan before starting Phase 5.3.*
 
-### Verified issues (will fix on this branch)
-- [ ] **CRITICAL — `FinalityChecker` data race** (`internal/cache/finality.go`): `head`
-  field is read by request handlers (`Classify` / `IsFinalized`) while
-  `SetHead` is called from the health-check callback goroutine, with no
-  synchronisation. Fix: add `sync.RWMutex`, read under RLock, write under Lock.
-- [ ] **HIGH — unchecked `json.Marshal` in `replaySubscriptions`** (`internal/proxy/ws.go`):
-  the replay request is built via `req, _ := json.Marshal(...)`. A silent `nil`
-  would be sent on the wire if marshalling ever failed. Fix: check the error and
-  fail the replay round.
-- [ ] **MEDIUM — `NextWithCapability` non-atomic counter** (`internal/upstream/upstream.go`):
-  uses `counter.Load()` + later `counter.Add(i+1)`, so two concurrent callers can
-  read the same `start` and route to the same node. Fix: reserve a starting
-  slot atomically via `counter.Add(1) - 1` like `Next()` does.
-- [ ] **MEDIUM — unbounded `s.pending` growth** (`internal/proxy/ws.go`): a
-  malicious or buggy upstream that never responds to `eth_subscribe` leaves
-  pending entries in the map for the lifetime of the session. Fix: cap the
-  pending map size and drop new subscribe requests once the cap is reached.
+### Verified issues (fixed on this branch)
+- [x] **CRITICAL — `FinalityChecker` data race** (`internal/cache/finality.go`): `head`
+  field was read by request handlers (`Classify` / `IsFinalized`) while
+  `SetHead` was called from the health-check callback goroutine, with no
+  synchronisation. Fixed by adding `sync.RWMutex`: writers lock, readers
+  RLock and snapshot `head` + `depth` before evaluating the finality predicate.
+- [x] **HIGH — unchecked `json.Marshal` in `replaySubscriptions`** (`internal/proxy/ws.go`):
+  the replay request was built via `req, _ := json.Marshal(...)`. A silent `nil`
+  frame would be sent on the wire if marshalling ever failed, losing a
+  subscription across failover. Fixed by returning the error so the replay
+  round fails loudly into the normal reconnect path.
+- [x] **MEDIUM — `NextWithCapability` non-atomic counter** (`internal/upstream/upstream.go`):
+  used `counter.Load()` + later `counter.Add(i+1)`, so two concurrent callers
+  could read the same `start` and route to the same node. Fixed by reserving
+  a starting slot atomically via `counter.Add(1) - 1` up front, matching
+  `Next()`'s handling.
+- [x] **MEDIUM — unbounded `s.pending` growth** (`internal/proxy/ws.go`): a
+  misbehaving upstream that never responds to `eth_subscribe` would leave
+  pending entries in the map for the lifetime of the session. Fixed by
+  capping the pending map at 1024 entries and returning a local JSON-RPC
+  error (code `-32000`) to the client once the cap is reached.
 
 ### Covered by Phase 5.3 (do not fix here)
 - Upstream `ReadMessage()` blocks without ctx cancellation → Task 5.3.1 (heartbeat).
