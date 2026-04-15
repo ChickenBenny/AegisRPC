@@ -114,12 +114,14 @@ func (p *Pool) Next() *Upstream {
 
 func (p *Pool) NextWithCapability(required capability.Capability) *Upstream {
 	n := uint64(len(p.nodes))
-	start := p.counter.Load()
+	// Reserve a starting slot atomically so two concurrent callers cannot
+	// observe the same start index and route to the same node. This mirrors
+	// Next()'s counter handling and keeps round-robin fair under concurrency.
+	start := p.counter.Add(1) - 1
 	for i := uint64(0); i < n; i++ {
 		idx := (start + i) % n
 		node := p.nodes[idx]
 		if node.IsHealthy() && node.Capabilities().Has(required) {
-			p.counter.Add(i + 1)
 			return node
 		}
 	}
