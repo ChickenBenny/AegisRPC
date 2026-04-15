@@ -76,3 +76,39 @@
 - [x] Add request body size limit (1MB via `MaxBytesReader` / `LimitReader`)
 - [x] Add graceful shutdown (SIGTERM/SIGINT)
 - [ ] Add Pool-level Mutex for dynamic node management (deferred — nodes slice is immutable for now)
+
+## Fix: Upstream Rate-Limit Handling (`fix/upstream-rate-limit-handling`)
+*Goal: Prevent HTTP 429 from the upstream from poisoning health state and negative cache.*
+
+### Root Cause
+Public RPC providers (e.g. `eth.llamarpc.com`) aggressively rate-limit both health-check
+requests and actual RPC calls with HTTP 429. Before this fix:
+
+1. **Health check** (`health.go`): a 429 was treated the same as a real failure → node marked
+   `unhealthy`. When the previous state was already unhealthy (e.g. after an initial timeout),
+   consecutive 429s would keep the node unhealthy until the next successful OK, causing all
+   WebSocket and HTTP requests to return "no upstream" / "upstream error" during that window.
+
+2. **WebSocket dial** (`ws.go`): `websocket.DefaultDialer.Dial` did not include an `Origin`
+   header. Many public Ethereum WebSocket endpoints reject the upgrade without it, returning a
+   non-101 status that gorilla/websocket surfaces as "bad handshake".
+
+3. **HTTP handler** (`handler.go`): when the upstream returned 429 to an actual RPC request,
+   `fetchFromUpstream` returned a generic error. This caused a 1-second negative-cache entry
+   which was then reset on every retry, creating a continuous "upstream error" loop even while
+   the node was nominally healthy.
+
+4. **Health check URL scheme** (`health.go`): `checkNode` used `node.URL.String()` directly
+   as the HTTP target. For `wss://` or `ws://` upstreams this produced an unsupported-scheme
+   error in `http.DefaultClient`, marking every WebSocket-only upstream permanently unhealthy.
+
+### Changes
+- [x] **`health.go` — `wsToHTTP()`**: convert `wss://→https://` and `ws://→http://` before
+  issuing health-check POST requests, so WebSocket-upstream URLs are accepted by `http.DefaultClient`.
+- [x] **`health.go` — 429 handling**: on HTTP 429 mark the node `healthy` (reachable but busy)
+  and skip the round rather than marking it unhealthy.
+- [x] **`ws.go` — `connectUpstream()`**: pass `Origin: http://localhost` header when dialling
+  upstream WebSocket, satisfying providers that validate the Origin field.
+- [x] **`handler.go` — `errRateLimited` sentinel**: distinguish 429 from real upstream errors;
+  do not write a negative-cache entry on 429, and surface it as `HTTP 429` to the caller instead
+  of the misleading "upstream error" / `502`.
