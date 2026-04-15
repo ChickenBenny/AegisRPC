@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -385,6 +386,142 @@ func TestServeWS_Failover_RemapsSubscriptionID(t *testing.T) {
 		"post-failover notification must be remapped to the original client sub ID")
 	assert.NotContains(t, got, newUpstreamSubID,
 		"new upstream sub ID must not leak to the client")
+}
+
+// ─── pending cap ─────────────────────────────────────────────────────────────
+
+// TestWSSession_PendingCap_RejectsOverLimit verifies that once s.pending reaches
+// maxPendingSubscribes, subsequent eth_subscribe calls receive a local JSON-RPC
+// error and are NOT forwarded to the upstream.
+func TestWSSession_PendingCap_RejectsOverLimit(t *testing.T) {
+	// upstream that fails the test if it ever receives a message after the cap.
+	overLimitReceived := make(chan struct{}, 1)
+	upstreamURL := mockUpstreamWS(t, func(conn *websocket.Conn) {
+		conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		for {
+			_, _, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			overLimitReceived <- struct{}{}
+		}
+	})
+
+	upConn, _, err := websocket.DefaultDialer.Dial(upstreamURL, nil)
+	require.NoError(t, err)
+	defer upConn.Close()
+
+	// Build a session and pre-fill pending to exactly the cap.
+	sess := newTestSession()
+	for i := 0; i < maxPendingSubscribes; i++ {
+		sess.pending[fmt.Sprintf("fill-%d", i)] = json.RawMessage(`["newHeads"]`)
+	}
+
+	// Now send one more eth_subscribe — must be rejected locally.
+	subMsg := []byte(`{"jsonrpc":"2.0","id":999,"method":"eth_subscribe","params":["newHeads"]}`)
+
+	// Capture what would be written to the client by replacing writeToClient via
+	// a real loopback WebSocket pair so we can read the response.
+	clientSide, serverSide := newLoopbackWS(t)
+	sess.client = serverSide
+
+	err = sess.forwardToUpstream(subMsg, websocket.TextMessage, upConn)
+	require.NoError(t, err, "forwardToUpstream must not return an error when rejecting locally")
+
+	// The client must receive a JSON-RPC error.
+	serverSide.SetReadDeadline(time.Now().Add(time.Second))
+	clientSide.SetReadDeadline(time.Now().Add(time.Second))
+	_, resp, err := clientSide.ReadMessage()
+	require.NoError(t, err, "client must receive an error response")
+
+	var envelope struct {
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(resp, &envelope))
+	require.NotNil(t, envelope.Error, "response must contain an error field")
+	assert.Equal(t, -32000, envelope.Error.Code)
+	assert.Contains(t, envelope.Error.Message, "too many pending")
+
+	// The upstream must NOT have received anything.
+	select {
+	case <-overLimitReceived:
+		t.Fatal("over-limit subscribe was forwarded to upstream")
+	default:
+	}
+}
+
+// TestWSSession_ReplaySubscriptions_MarshalError verifies that a marshal failure
+// during replay returns an error instead of sending a nil frame to the upstream.
+func TestWSSession_ReplaySubscriptions_MarshalError(t *testing.T) {
+	sess := newTestSession()
+	// subscribeParams with invalid UTF-8 triggers json.Marshal to fail on some
+	// platforms; use a RawMessage that is syntactically invalid JSON instead,
+	// which causes Marshal of the outer envelope to fail when re-encoding.
+	// In practice we inject a sub whose params are an un-marshalable value by
+	// overriding the params to a RawMessage that is valid to store but will cause
+	// the outer map marshal to fail because json.RawMessage containing non-UTF-8
+	// bytes is rejected by encoding/json.
+	badParams := json.RawMessage("\xff\xfe") // invalid UTF-8 — rejected by json.Marshal
+	sess.subs["0xCLIENT"] = &subscription{
+		subscribeParams: badParams,
+		clientID:        "0xCLIENT",
+		upstreamID:      "0xOLD",
+	}
+	sess.upToClient["0xOLD"] = "0xCLIENT"
+
+	// Use a mock upstream that records whether it received anything.
+	received := make(chan struct{}, 1)
+	upstreamURL := mockUpstreamWS(t, func(conn *websocket.Conn) {
+		conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		_, _, err := conn.ReadMessage()
+		if err == nil {
+			received <- struct{}{}
+		}
+	})
+
+	upConn, _, err := websocket.DefaultDialer.Dial(upstreamURL, nil)
+	require.NoError(t, err)
+	defer upConn.Close()
+
+	err = sess.replaySubscriptions(upConn)
+	assert.Error(t, err, "replaySubscriptions must return an error when marshal fails")
+	assert.Contains(t, err.Error(), "marshal replay")
+
+	// Upstream must not have received a nil/empty frame.
+	select {
+	case <-received:
+		t.Fatal("upstream received a frame despite marshal failure")
+	default:
+	}
+}
+
+// newLoopbackWS creates an in-process WebSocket pair: one conn acts as the
+// "client side" (for reading responses) and the other as the "server side"
+// (assigned to sess.client for writing).
+func newLoopbackWS(t *testing.T) (clientSide, serverSide *websocket.Conn) {
+	t.Helper()
+	ready := make(chan *websocket.Conn, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("loopback upgrade: %v", err)
+			return
+		}
+		ready <- conn
+	}))
+	t.Cleanup(srv.Close)
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
+	client, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { client.Close() })
+
+	server := <-ready
+	t.Cleanup(func() { server.Close() })
+	return client, server
 }
 
 // ─── pool helpers ────────────────────────────────────────────────────────────

@@ -321,7 +321,7 @@ func buildErrorResponse(id json.RawMessage, message string) []byte {
 	if len(id) == 0 {
 		id = json.RawMessage("null")
 	}
-	resp, _ := json.Marshal(map[string]any{
+	resp, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      json.RawMessage(id),
 		"error": map[string]any{
@@ -329,6 +329,10 @@ func buildErrorResponse(id json.RawMessage, message string) []byte {
 			"message": message,
 		},
 	})
+	if err != nil {
+		// Fallback to a static response that is guaranteed to marshal correctly.
+		return []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"internal error"}}`)
+	}
 	return resp
 }
 

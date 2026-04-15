@@ -40,9 +40,9 @@ func (fc *FinalityChecker) SetHead(blockNum uint64) {
 func (fc *FinalityChecker) IsFinalized(blockNum uint64) bool {
 	fc.mu.RLock()
 	head := fc.head
-	depth := fc.depth
 	fc.mu.RUnlock()
-	return head >= blockNum && head-blockNum >= depth
+	// depth is set once at construction and never mutated; no lock needed.
+	return head >= blockNum && head-blockNum >= fc.depth
 }
 
 // parseHexBlock decodes a "0x…"-prefixed hex string into a uint64.
