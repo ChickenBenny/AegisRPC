@@ -93,6 +93,13 @@ func checkNode(node *Upstream) {
 	}
 	defer resp.Body.Close()
 
+	// 429 means the health-check itself was rate-limited; the node is reachable
+	// but busy. Mark it healthy so callers can still try this round.
+	if resp.StatusCode == http.StatusTooManyRequests {
+		log.Printf("[health] %s rate-limited (429), marking healthy", node.URL.Host)
+		node.SetHealthy(true)
+		return
+	}
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("[health] %s HTTP %d", node.URL.Host, resp.StatusCode)
 		node.SetHealthy(false)
