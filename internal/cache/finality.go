@@ -4,9 +4,16 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"sync"
 )
 
+// FinalityChecker classifies block identifiers into cache layers based on
+// the current chain head and a configurable finality depth. SetHead is
+// invoked from the health-check goroutine while Classify / IsFinalized run
+// on every request handler, so head reads and writes are synchronised
+// through mu.
 type FinalityChecker struct {
+	mu    sync.RWMutex
 	depth uint64
 	head  uint64
 }
@@ -15,15 +22,27 @@ func NewFinalityChecker(depth uint64) *FinalityChecker {
 	return &FinalityChecker{depth: depth}
 }
 
-func (fc *FinalityChecker) Head() uint64 { return fc.head }
+func (fc *FinalityChecker) Head() uint64 {
+	fc.mu.RLock()
+	defer fc.mu.RUnlock()
+	return fc.head
+}
 
-func (fc *FinalityChecker) SetHead(blockNum uint64) { fc.head = blockNum }
+func (fc *FinalityChecker) SetHead(blockNum uint64) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.head = blockNum
+}
 
 // IsFinalized reports whether blockNum has accumulated at least fc.depth
 // confirmations on top of it. The guard against uint64 underflow is the
-// fc.head >= blockNum check.
+// head >= blockNum check.
 func (fc *FinalityChecker) IsFinalized(blockNum uint64) bool {
-	return fc.head >= blockNum && fc.head-blockNum >= fc.depth
+	fc.mu.RLock()
+	head := fc.head
+	depth := fc.depth
+	fc.mu.RUnlock()
+	return head >= blockNum && head-blockNum >= depth
 }
 
 // parseHexBlock decodes a "0x…"-prefixed hex string into a uint64.
