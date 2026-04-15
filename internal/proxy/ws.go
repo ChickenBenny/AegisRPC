@@ -177,12 +177,15 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 	// Phase 1: send all subscribe requests at once.
 	for _, sub := range subs {
 		replayID := "replay:" + sub.clientID
-		req, _ := json.Marshal(map[string]any{
+		req, err := json.Marshal(map[string]any{
 			"jsonrpc": "2.0",
 			"id":      replayID,
 			"method":  "eth_subscribe",
 			"params":  sub.subscribeParams,
 		})
+		if err != nil {
+			return fmt.Errorf("marshal replay for %s: %w", sub.clientID, err)
+		}
 		if err := up.WriteMessage(websocket.TextMessage, req); err != nil {
 			return fmt.Errorf("write replay: %w", err)
 		}
