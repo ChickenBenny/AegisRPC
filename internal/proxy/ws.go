@@ -141,7 +141,8 @@ func (s *wsSession) connectUpstream() (*websocket.Conn, error) {
 			break
 		}
 		wsURL := httpToWS(node.URL.String())
-		conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+		header := http.Header{"Origin": {"http://localhost"}}
+		conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
 		if err != nil {
 			log.Printf("[ws] dial %s failed: %v, trying next", wsURL, err)
 			continue

@@ -253,7 +253,7 @@ func TestNewPool_AnnotatedURL_SetsCapabilities(t *testing.T) {
 	assert.Equal(t, capability.CapBasic|capability.CapTrace, nodes[1].Capabilities())
 }
 
-func TestNewPool_MixedAnnotated_UnannotatedHasZeroCaps(t *testing.T) {
+func TestNewPool_MixedAnnotated_UnannotatedHasBasicCap(t *testing.T) {
 	pool, err := NewPool([]string{
 		"https://plain.example.com",
 		"https://debug.example.com[debug]",
@@ -261,7 +261,8 @@ func TestNewPool_MixedAnnotated_UnannotatedHasZeroCaps(t *testing.T) {
 	require.NoError(t, err)
 
 	nodes := pool.Nodes()
-	assert.Equal(t, capability.Capability(0), nodes[0].Capabilities(), "unannotated node caps should be 0")
+	// Unannotated nodes default to CapBasic so NextWithCapability(CapBasic) can route to them.
+	assert.Equal(t, capability.CapBasic, nodes[0].Capabilities(), "unannotated node should default to CapBasic")
 	assert.Equal(t, capability.CapBasic|capability.CapDebug, nodes[1].Capabilities())
 }
 

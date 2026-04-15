@@ -18,6 +18,12 @@ func New(pool *upstream.Pool) *Router {
 	}
 }
 
+// Nodes exposes the pool's node list so callers that hold only a Router
+// can still size retry loops without a separate Pool reference.
+func (r *Router) Nodes() []*upstream.Upstream {
+	return r.pool.Nodes()
+}
+
 func (r *Router) Route(method string) (*upstream.Upstream, error) {
 	required := MethodCapability(method)
 	node := r.pool.NextWithCapability(required)

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -58,11 +59,23 @@ func parseBlockNumber(hexStr string) (uint64, error) {
 	return num, nil
 }
 
+// wsToHTTP converts a WebSocket URL (ws:// or wss://) to its HTTP equivalent
+// so that http.DefaultClient can be used for health-check POST requests.
+func wsToHTTP(u string) string {
+	switch {
+	case strings.HasPrefix(u, "wss://"):
+		return "https://" + u[6:]
+	case strings.HasPrefix(u, "ws://"):
+		return "http://" + u[5:]
+	}
+	return u
+}
+
 func checkNode(node *Upstream) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, node.URL.String(),
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wsToHTTP(node.URL.String()),
 		bytes.NewReader(healthCheckPayload))
 	if err != nil {
 		log.Printf("[health] %s failed to build request: %v", node.URL.Host, err)
@@ -80,6 +93,13 @@ func checkNode(node *Upstream) {
 	}
 	defer resp.Body.Close()
 
+	// 429 means the health-check itself was rate-limited; the node is reachable
+	// but busy. Mark it healthy so callers can still try this round.
+	if resp.StatusCode == http.StatusTooManyRequests {
+		log.Printf("[health] %s rate-limited (429), marking healthy", node.URL.Host)
+		node.SetHealthy(true)
+		return
+	}
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("[health] %s HTTP %d", node.URL.Host, resp.StatusCode)
 		node.SetHealthy(false)
