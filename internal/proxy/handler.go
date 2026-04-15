@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"time"
@@ -16,6 +16,13 @@ import (
 	"github.com/ChickenBenny/AegisRPC/internal/upstream"
 	"golang.org/x/sync/singleflight"
 )
+
+// rateLimitedError is returned by fetchFromUpstream when the upstream replies 429.
+// It carries the upstream's Retry-After header value (empty string if absent) so the
+// handler can forward it to the caller. It is never written to the negative cache.
+type rateLimitedError struct{ retryAfter string }
+
+func (e *rateLimitedError) Error() string { return "upstream rate limited" }
 
 // Handler is an http.Handler that proxies JSON-RPC requests to upstream nodes
 // with integrated caching, singleflight coalescing, and finality-aware classification.
@@ -78,7 +85,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	v, err, _ := h.sf.Do(key, func() (any, error) {
 		resp, err := h.fetchFromUpstream(r, body)
 		if err != nil {
-			h.cache.Set("neg::"+key, []byte(err.Error()), 1*time.Second)
+			var rl *rateLimitedError
+		if !errors.As(err, &rl) {
+				h.cache.Set("neg::"+key, []byte(err.Error()), 1*time.Second)
+			}
 			return nil, err
 		}
 		// Store result in cache with appropriate TTL.
@@ -90,7 +100,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return resp, nil
 	})
 	if err != nil {
-		http.Error(w, "upstream error", http.StatusBadGateway)
+		var rl *rateLimitedError
+		if errors.As(err, &rl) {
+			if rl.retryAfter != "" {
+				w.Header().Set("Retry-After", rl.retryAfter)
+			}
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
+		} else {
+			http.Error(w, "upstream error", http.StatusBadGateway)
+		}
 		return
 	}
 	result := v.([]byte)
@@ -100,51 +118,87 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // proxyDirect forwards the request to the upstream without any caching.
+// It tries every healthy node before giving up, buffering each response so
+// that headers are never written to w until a successful response is found.
 func (h *Handler) proxyDirect(w http.ResponseWriter, r *http.Request, body []byte) {
-	node := h.pool.Next()
-	if node == nil {
-		http.Error(w, "no healthy upstream available", http.StatusBadGateway)
+	n := len(h.pool.Nodes())
+	for i := 0; i < n; i++ {
+		node := h.pool.Next()
+		if node == nil {
+			break
+		}
+
+		outReq := r.Clone(r.Context())
+		outReq.Body = io.NopCloser(bytes.NewReader(body))
+		outReq.ContentLength = int64(len(body))
+
+		proxy := httputil.NewSingleHostReverseProxy(node.URL)
+		proxy.Director = func(req *http.Request) {
+			req.URL.Scheme = node.URL.Scheme
+			req.URL.Host = node.URL.Host
+			req.Host = node.URL.Host
+		}
+
+		buf := &bufResponseWriter{header: make(http.Header), status: http.StatusOK}
+		proxy.ServeHTTP(buf, outReq)
+		if buf.status < 200 || buf.status >= 300 {
+			log.Printf("[http] %s returned %d, trying next", node.URL.Host, buf.status)
+			continue
+		}
+
+		// Successful response — flush buffer to the real ResponseWriter.
+		for k, vs := range buf.header {
+			for _, v := range vs {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(buf.status)
+		w.Write(buf.body.Bytes())
 		return
 	}
-	// Restore body for the reverse proxy.
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	proxy := httputil.NewSingleHostReverseProxy(node.URL)
-	proxy.Director = func(req *http.Request) {
-		req.URL.Scheme = node.URL.Scheme
-		req.URL.Host = node.URL.Host
-		req.Host = node.URL.Host
-	}
-	proxy.ServeHTTP(w, r)
+	http.Error(w, "no healthy upstream available", http.StatusBadGateway)
 }
 
 // fetchFromUpstream sends the request to an upstream node and returns the raw
-// response body. Uses a buffering ResponseWriter to capture the response.
+// response body. It tries every healthy node in the pool before giving up, so
+// a node that is marked healthy but fails the live request does not abort the call.
 func (h *Handler) fetchFromUpstream(r *http.Request, body []byte) ([]byte, error) {
-	node := h.pool.Next()
-	if node == nil {
-		return nil, errors.New("no healthy upstream available")
-	}
+	// Clone once with a detached context so a single caller cancelling their
+	// request does not abort the shared singleflight call and fail all
+	// coalesced callers.
+	baseReq := r.Clone(context.WithoutCancel(r.Context()))
 
-	// Clone the request with a detached context so that a single caller
-	// cancelling their request does not abort the shared singleflight call
-	// and fail all coalesced callers.
-	outReq := r.Clone(context.WithoutCancel(r.Context()))
-	outReq.Body = io.NopCloser(bytes.NewReader(body))
-	outReq.ContentLength = int64(len(body))
+	n := len(h.pool.Nodes())
+	for i := 0; i < n; i++ {
+		node := h.pool.Next()
+		if node == nil {
+			break
+		}
 
-	proxy := httputil.NewSingleHostReverseProxy(node.URL)
-	proxy.Director = func(req *http.Request) {
-		req.URL.Scheme = node.URL.Scheme
-		req.URL.Host = node.URL.Host
-		req.Host = node.URL.Host
-	}
+		outReq := baseReq.Clone(baseReq.Context())
+		outReq.Body = io.NopCloser(bytes.NewReader(body))
+		outReq.ContentLength = int64(len(body))
 
-	buf := &bufResponseWriter{header: make(http.Header), status: http.StatusOK}
-	proxy.ServeHTTP(buf, outReq)
-	if buf.status < 200 || buf.status >= 300 {
-		return nil, fmt.Errorf("upstream returned %d", buf.status)
+		proxy := httputil.NewSingleHostReverseProxy(node.URL)
+		proxy.Director = func(req *http.Request) {
+			req.URL.Scheme = node.URL.Scheme
+			req.URL.Host = node.URL.Host
+			req.Host = node.URL.Host
+		}
+
+		buf := &bufResponseWriter{header: make(http.Header), status: http.StatusOK}
+		proxy.ServeHTTP(buf, outReq)
+
+		if buf.status == http.StatusTooManyRequests {
+			return nil, &rateLimitedError{retryAfter: buf.header.Get("Retry-After")}
+		}
+		if buf.status < 200 || buf.status >= 300 {
+			log.Printf("[http] %s returned %d, trying next", node.URL.Host, buf.status)
+			continue
+		}
+		return buf.body.Bytes(), nil
 	}
-	return buf.body.Bytes(), nil
+	return nil, errors.New("no healthy upstream available")
 }
 
 // bufResponseWriter captures a proxied response into memory.
