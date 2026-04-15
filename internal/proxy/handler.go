@@ -86,7 +86,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		resp, err := h.fetchFromUpstream(r, body, req.Method)
 		if err != nil {
 			var rl *rateLimitedError
-		if !errors.As(err, &rl) {
+			if !errors.As(err, &rl) {
 				h.cache.Set("neg::"+key, []byte(err.Error()), 1*time.Second)
 			}
 			return nil, err
