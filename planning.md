@@ -77,6 +77,43 @@
 - [x] Add graceful shutdown (SIGTERM/SIGINT)
 - [ ] Add Pool-level Mutex for dynamic node management (deferred — nodes slice is immutable for now)
 
+## Fix: Bug Sweep (`fix/bug-sweep`)
+*Goal: Fix real bugs discovered by a full-project scan before starting Phase 5.3.*
+
+### Verified issues (will fix on this branch)
+- [ ] **CRITICAL — `FinalityChecker` data race** (`internal/cache/finality.go`): `head`
+  field is read by request handlers (`Classify` / `IsFinalized`) while
+  `SetHead` is called from the health-check callback goroutine, with no
+  synchronisation. Fix: add `sync.RWMutex`, read under RLock, write under Lock.
+- [ ] **HIGH — unchecked `json.Marshal` in `replaySubscriptions`** (`internal/proxy/ws.go`):
+  the replay request is built via `req, _ := json.Marshal(...)`. A silent `nil`
+  would be sent on the wire if marshalling ever failed. Fix: check the error and
+  fail the replay round.
+- [ ] **MEDIUM — `NextWithCapability` non-atomic counter** (`internal/upstream/upstream.go`):
+  uses `counter.Load()` + later `counter.Add(i+1)`, so two concurrent callers can
+  read the same `start` and route to the same node. Fix: reserve a starting
+  slot atomically via `counter.Add(1) - 1` like `Next()` does.
+- [ ] **MEDIUM — unbounded `s.pending` growth** (`internal/proxy/ws.go`): a
+  malicious or buggy upstream that never responds to `eth_subscribe` leaves
+  pending entries in the map for the lifetime of the session. Fix: cap the
+  pending map size and drop new subscribe requests once the cap is reached.
+
+### Covered by Phase 5.3 (do not fix here)
+- Upstream `ReadMessage()` blocks without ctx cancellation → Task 5.3.1 (heartbeat).
+- Client reader has no read deadline → Task 5.3.1 (heartbeat).
+
+### False positives from the scan (documented so they don't get re-flagged)
+- `s.subs` keyed by volatile upstream ID — the key is actually the stable
+  client-facing ID assigned on first subscribe and is never rewritten.
+- `replaySubscriptions` vs `forwardToClient` race — replay runs before `pump`
+  starts, so there is no concurrent reader of `s.upToClient` during replay.
+- `cache.deleteExpired` modifies map during iteration — Go's spec explicitly
+  allows deletion of keys during `range`.
+- `result := v.([]byte)` without `, ok` — the value is produced inside the same
+  package by our own singleflight closure, so the type is controlled.
+- `fromClient` channel "leak" in `ws.go run()` — the reader goroutine unblocks
+  when `conn.Close()` fires in the caller's defer, so no long-lived goroutine survives.
+
 ## Fix: Upstream Rate-Limit Handling (`fix/upstream-rate-limit-handling`)
 *Goal: Prevent HTTP 429 from the upstream from poisoning health state and negative cache.*
 
