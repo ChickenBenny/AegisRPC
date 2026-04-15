@@ -60,6 +60,12 @@ func newWSSession(pool *upstream.Pool, client *websocket.Conn) *wsSession {
 // so a stalled client cannot block the upstream reader goroutine indefinitely.
 const clientWriteTimeout = 10 * time.Second
 
+// maxPendingSubscribes caps the number of in-flight eth_subscribe requests
+// per session. A misbehaving or unresponsive upstream could otherwise leave
+// entries in s.pending forever while the client keeps issuing new subscribes,
+// growing the map without bound for the lifetime of the session.
+const maxPendingSubscribes = 1024
+
 // writeToClient sends a WebSocket frame to the client with a write deadline.
 func (s *wsSession) writeToClient(mt int, msg []byte) error {
 	s.client.SetWriteDeadline(time.Now().Add(clientWriteTimeout))
@@ -177,12 +183,15 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 	// Phase 1: send all subscribe requests at once.
 	for _, sub := range subs {
 		replayID := "replay:" + sub.clientID
-		req, _ := json.Marshal(map[string]any{
+		req, err := json.Marshal(map[string]any{
 			"jsonrpc": "2.0",
 			"id":      replayID,
 			"method":  "eth_subscribe",
 			"params":  sub.subscribeParams,
 		})
+		if err != nil {
+			return fmt.Errorf("marshal replay for %s: %w", sub.clientID, err)
+		}
 		if err := up.WriteMessage(websocket.TextMessage, req); err != nil {
 			return fmt.Errorf("write replay: %w", err)
 		}
@@ -291,6 +300,11 @@ func (s *wsSession) forwardToUpstream(msg []byte, mt int, up *websocket.Conn) er
 		case "eth_subscribe":
 			// Track this request ID so we can record the subscription when the response arrives.
 			s.mu.Lock()
+			if len(s.pending) >= maxPendingSubscribes {
+				s.mu.Unlock()
+				log.Printf("[ws] pending subscribe cap (%d) reached, rejecting", maxPendingSubscribes)
+				return s.writeToClient(mt, buildErrorResponse(req.ID, "too many pending subscriptions"))
+			}
 			s.pending[string(req.ID)] = req.Params
 			s.mu.Unlock()
 		case "eth_unsubscribe":
@@ -299,6 +313,27 @@ func (s *wsSession) forwardToUpstream(msg []byte, mt int, up *websocket.Conn) er
 		}
 	}
 	return up.WriteMessage(mt, msg)
+}
+
+// buildErrorResponse produces a JSON-RPC error envelope echoing the original
+// request ID. Used to reject client calls locally without touching the upstream.
+func buildErrorResponse(id json.RawMessage, message string) []byte {
+	if len(id) == 0 {
+		id = json.RawMessage("null")
+	}
+	resp, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      json.RawMessage(id),
+		"error": map[string]any{
+			"code":    -32000,
+			"message": message,
+		},
+	})
+	if err != nil {
+		// Fallback to a static response that is guaranteed to marshal correctly.
+		return []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"internal error"}}`)
+	}
+	return resp
 }
 
 // forwardToClient rewrites subscription IDs where necessary and sends to client.
