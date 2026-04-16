@@ -46,11 +46,17 @@ func dialTestServer(t *testing.T, srv *httptest.Server) *websocket.Conn {
 }
 
 // newTestSession creates a wsSession without a real client conn — for pure-logic unit tests.
+// pingPeriod and pongWait are set to short durations so heartbeat tests complete quickly.
+// pingPeriod must be greater than pongWait: each ping sets a read deadline of pongWait;
+// if the next ping fires before that deadline expires it would push the deadline forward
+// indefinitely, preventing the timeout from ever triggering.
 func newTestSession() *wsSession {
 	return &wsSession{
 		subs:       make(map[string]*subscription),
 		upToClient: make(map[string]string),
 		pending:    make(map[string]json.RawMessage),
+		pingPeriod: 100 * time.Millisecond,
+		pongWait:   50 * time.Millisecond,
 	}
 }
 
@@ -549,6 +555,100 @@ func poolWithURLs(t *testing.T, wsURL1, wsURL2 string) *upstream.Pool {
 		n.SetHealthy(true)
 	}
 	return pool
+}
+
+// ─── heartbeat (5.3.1) ───────────────────────────────────────────────────────
+
+// TestPump_Heartbeat_PongReceived_MaintainsConnection verifies that when the upstream
+// correctly responds to Pings with Pongs, pump keeps running and does NOT return early.
+//
+// gorilla/websocket automatically sends a Pong when ReadMessage encounters a Ping frame,
+// so a mock upstream that just calls ReadMessage in a loop is sufficient.
+func TestPump_Heartbeat_PongReceived_MaintainsConnection(t *testing.T) {
+	// upstream: reads messages (auto-pong via gorilla) until test finishes.
+	upstreamURL := mockUpstreamWS(t, func(conn *websocket.Conn) {
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+
+	sess := newTestSession() // pingPeriod=50ms, pongWait=100ms
+
+	upConn, _, err := websocket.DefaultDialer.Dial(upstreamURL, nil)
+	require.NoError(t, err)
+	defer upConn.Close()
+
+	fromClient := make(chan clientFrame)
+	clientGone := make(chan struct{})
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- sess.pump(context.Background(), upConn, fromClient, clientGone)
+	}()
+
+	// After several full ping cycles (100ms × 3 = 300ms), pump must still be alive.
+	select {
+	case <-done:
+		t.Fatal("pump exited early — upstream was responding to pings and should keep the connection alive")
+	case <-time.After(350 * time.Millisecond):
+		// Good — still running after multiple ping cycles.
+	}
+
+	// Cleanly end the test: close upstream to unblock pump.
+	upConn.Close()
+	select {
+	case clientLeft := <-done:
+		assert.False(t, clientLeft, "upstream close should not look like a client disconnect")
+	case <-time.After(time.Second):
+		t.Fatal("pump did not exit after upstream was closed")
+	}
+}
+
+// TestPump_Heartbeat_NoPong_TriggersFailover verifies that when the upstream stops
+// responding to Pings (zombie / half-open TCP), pump exits with clientLeft=false
+// within approximately pongWait, triggering the failover reconnect loop.
+func TestPump_Heartbeat_NoPong_TriggersFailover(t *testing.T) {
+	// upstream: ignores Pings entirely (override PingHandler to no-op; no Pong sent).
+	upstreamURL := mockUpstreamWS(t, func(conn *websocket.Conn) {
+		conn.SetPingHandler(func(string) error { return nil }) // swallow ping, no pong
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+
+	sess := newTestSession() // pingPeriod=50ms, pongWait=100ms
+
+	upConn, _, err := websocket.DefaultDialer.Dial(upstreamURL, nil)
+	require.NoError(t, err)
+	defer upConn.Close()
+
+	fromClient := make(chan clientFrame)
+	clientGone := make(chan struct{})
+
+	start := time.Now()
+	done := make(chan bool, 1)
+	go func() {
+		done <- sess.pump(context.Background(), upConn, fromClient, clientGone)
+	}()
+
+	// pump must detect the missing Pong and exit within pingPeriod + pongWait + small margin.
+	maxWait := sess.pingPeriod + sess.pongWait + 500*time.Millisecond
+	select {
+	case clientLeft := <-done:
+		assert.False(t, clientLeft,
+			"no-pong timeout must trigger upstream failover (clientLeft=false), not a client exit")
+		elapsed := time.Since(start)
+		assert.Less(t, elapsed, maxWait,
+			"pump took too long to detect the dead upstream (elapsed %v, limit %v)", elapsed, maxWait)
+	case <-time.After(maxWait):
+		t.Fatalf("pump did not detect missing Pong within %v — heartbeat not implemented?", maxWait)
+	}
 }
 
 // ─── context cancel ──────────────────────────────────────────────────────────

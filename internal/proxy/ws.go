@@ -34,9 +34,13 @@ type wsSession struct {
 	client *websocket.Conn
 
 	mu         sync.Mutex
-	subs       map[string]*subscription  // clientID → subscription
-	upToClient map[string]string         // upstreamID → clientID (updated on failover)
+	subs       map[string]*subscription   // clientID → subscription
+	upToClient map[string]string          // upstreamID → clientID (updated on failover)
 	pending    map[string]json.RawMessage // raw request ID → subscribe params (awaiting response)
+
+	// Heartbeat timing. Defaults set by newWSSession; tests override for speed.
+	pingPeriod time.Duration // how often to send a Ping to the upstream
+	pongWait   time.Duration // how long to wait for the Pong before declaring the upstream dead
 }
 
 // clientFrame is one WebSocket frame received from the client.
@@ -52,6 +56,8 @@ func newWSSession(pool *upstream.Pool, client *websocket.Conn) *wsSession {
 		subs:       make(map[string]*subscription),
 		upToClient: make(map[string]string),
 		pending:    make(map[string]json.RawMessage),
+		pingPeriod: upstreamPingPeriod,
+		pongWait:   upstreamPongWait,
 	}
 }
 
@@ -59,6 +65,13 @@ func newWSSession(pool *upstream.Pool, client *websocket.Conn) *wsSession {
 // If the client's TCP window is full for longer than this, the session is terminated
 // so a stalled client cannot block the upstream reader goroutine indefinitely.
 const clientWriteTimeout = 10 * time.Second
+
+// upstreamPingPeriod is how often AegisRPC sends a WebSocket Ping to the upstream.
+const upstreamPingPeriod = 30 * time.Second
+
+// upstreamPongWait is how long we wait for a Pong reply before declaring the
+// upstream dead and triggering failover.
+const upstreamPongWait = 10 * time.Second
 
 // maxPendingSubscribes caps the number of in-flight eth_subscribe requests
 // per session. A misbehaving or unresponsive upstream could otherwise leave
@@ -251,8 +264,18 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 //
 // s.client is never read here; the caller (run) owns the sole s.client reader goroutine,
 // which prevents concurrent reads across reconnections.
+//
+// Heartbeat: a Ping is sent to the upstream every s.pingPeriod. If no Pong arrives within
+// s.pongWait the read deadline expires, the upstream goroutine exits, and pump returns false
+// to trigger failover.
 func (s *wsSession) pump(ctx context.Context, up *websocket.Conn, fromClient <-chan clientFrame, clientGone <-chan struct{}) (clientLeft bool) {
 	upDone := make(chan struct{})
+
+	// Pong handler: clears the read deadline so the connection stays alive between ping cycles.
+	up.SetPongHandler(func(string) error {
+		up.SetReadDeadline(time.Time{})
+		return nil
+	})
 
 	// upstream → client
 	go func() {
@@ -268,6 +291,9 @@ func (s *wsSession) pump(ctx context.Context, up *websocket.Conn, fromClient <-c
 		}
 	}()
 
+	pingTicker := time.NewTicker(s.pingPeriod)
+	defer pingTicker.Stop()
+
 	// client → upstream (via channel; no direct read of s.client here)
 	for {
 		select {
@@ -277,6 +303,13 @@ func (s *wsSession) pump(ctx context.Context, up *websocket.Conn, fromClient <-c
 			return true
 		case <-ctx.Done():
 			return true
+		case <-pingTicker.C:
+			if err := up.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(s.pongWait)); err != nil {
+				up.Close()
+				<-upDone
+				return false
+			}
+			up.SetReadDeadline(time.Now().Add(s.pongWait))
 		case f, ok := <-fromClient:
 			if !ok {
 				return true
