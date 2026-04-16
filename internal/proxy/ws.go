@@ -304,12 +304,12 @@ func (s *wsSession) pump(ctx context.Context, up *websocket.Conn, fromClient <-c
 		case <-ctx.Done():
 			return true
 		case <-pingTicker.C:
+			up.SetReadDeadline(time.Now().Add(s.pongWait))
 			if err := up.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(s.pongWait)); err != nil {
 				up.Close()
 				<-upDone
 				return false
 			}
-			up.SetReadDeadline(time.Now().Add(s.pongWait))
 		case f, ok := <-fromClient:
 			if !ok {
 				return true

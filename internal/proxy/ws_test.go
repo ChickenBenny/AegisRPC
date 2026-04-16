@@ -575,7 +575,7 @@ func TestPump_Heartbeat_PongReceived_MaintainsConnection(t *testing.T) {
 		}
 	})
 
-	sess := newTestSession() // pingPeriod=50ms, pongWait=100ms
+	sess := newTestSession() // pingPeriod=100ms, pongWait=50ms
 
 	upConn, _, err := websocket.DefaultDialer.Dial(upstreamURL, nil)
 	require.NoError(t, err)
@@ -622,7 +622,7 @@ func TestPump_Heartbeat_NoPong_TriggersFailover(t *testing.T) {
 		}
 	})
 
-	sess := newTestSession() // pingPeriod=50ms, pongWait=100ms
+	sess := newTestSession() // pingPeriod=100ms, pongWait=50ms
 
 	upConn, _, err := websocket.DefaultDialer.Dial(upstreamURL, nil)
 	require.NoError(t, err)
