@@ -38,16 +38,21 @@ func Default() Config {
 	}
 }
 
-// yamlConfig mirrors Config but uses strings for duration fields to support "15s" syntax.
+// yamlConfig mirrors Config but:
+//   - Uses strings for duration fields to support "15s" syntax.
+//   - Uses pointers for integer/uint64 fields so that an explicit "0" in the
+//     YAML file can be distinguished from "field not present". Without pointers
+//     the zero-value check (if yc.MaxCacheEntries != 0) would silently skip a
+//     legitimate max_cache_entries: 0 (unlimited) setting.
 type yamlConfig struct {
-	Port            int      `yaml:"port"`
+	Port            *int     `yaml:"port"`
 	Upstreams       []string `yaml:"upstreams"`
 	MutableTTL      string   `yaml:"mutable_ttl"`
-	MaxCacheEntries int      `yaml:"max_cache_entries"`
-	FinalityDepth   uint64   `yaml:"finality_depth"`
+	MaxCacheEntries *int     `yaml:"max_cache_entries"`
+	FinalityDepth   *uint64  `yaml:"finality_depth"`
 	HealthInterval  string   `yaml:"health_interval"`
 	ProbeTimeout    string   `yaml:"probe_timeout"`
-	LagThreshold    uint64   `yaml:"lag_threshold"`
+	LagThreshold    *uint64  `yaml:"lag_threshold"`
 }
 
 // LoadFile reads a YAML config file and merges non-zero values into cfg.
@@ -64,8 +69,8 @@ func LoadFile(path string, cfg *Config) error {
 		return fmt.Errorf("parse config file: %w", err)
 	}
 
-	if yc.Port != 0 {
-		cfg.Port = yc.Port
+	if yc.Port != nil {
+		cfg.Port = *yc.Port
 	}
 	if len(yc.Upstreams) > 0 {
 		cfg.Upstreams = yc.Upstreams
@@ -77,11 +82,11 @@ func LoadFile(path string, cfg *Config) error {
 		}
 		cfg.MutableTTL = d
 	}
-	if yc.MaxCacheEntries != 0 {
-		cfg.MaxCacheEntries = yc.MaxCacheEntries
+	if yc.MaxCacheEntries != nil {
+		cfg.MaxCacheEntries = *yc.MaxCacheEntries
 	}
-	if yc.FinalityDepth != 0 {
-		cfg.FinalityDepth = yc.FinalityDepth
+	if yc.FinalityDepth != nil {
+		cfg.FinalityDepth = *yc.FinalityDepth
 	}
 	if yc.HealthInterval != "" {
 		d, err := time.ParseDuration(yc.HealthInterval)
@@ -97,57 +102,98 @@ func LoadFile(path string, cfg *Config) error {
 		}
 		cfg.ProbeTimeout = d
 	}
-	if yc.LagThreshold != 0 {
-		cfg.LagThreshold = yc.LagThreshold
+	if yc.LagThreshold != nil {
+		cfg.LagThreshold = *yc.LagThreshold
 	}
 
 	return nil
 }
 
 // ApplyEnv reads AEGIS_* environment variables and overrides fields in cfg.
-// Invalid values are silently ignored so a typo in one var doesn't kill the server.
+// Invalid values emit a [config] warning and are ignored, so that a single
+// typo does not prevent the server from starting.
 func ApplyEnv(cfg *Config) {
 	if v := os.Getenv("AEGIS_PORT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Port = n
+		} else {
+			log.Printf("[config] AEGIS_PORT=%q is not a valid integer, ignoring", v)
 		}
 	}
 	if v := os.Getenv("AEGIS_UPSTREAMS"); v != "" {
 		urls := splitTrimmed(v, ",")
 		if len(urls) > 0 {
 			cfg.Upstreams = urls
+		} else {
+			log.Printf("[config] AEGIS_UPSTREAMS=%q produced no valid URLs, ignoring", v)
 		}
 	}
 	if v := os.Getenv("AEGIS_MUTABLE_TTL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.MutableTTL = d
+		} else {
+			log.Printf("[config] AEGIS_MUTABLE_TTL=%q is not a valid duration, ignoring", v)
 		}
 	}
 	if v := os.Getenv("AEGIS_MAX_CACHE_ENTRIES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.MaxCacheEntries = n
+		} else {
+			log.Printf("[config] AEGIS_MAX_CACHE_ENTRIES=%q is not a valid integer, ignoring", v)
 		}
 	}
 	if v := os.Getenv("AEGIS_FINALITY_DEPTH"); v != "" {
 		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
 			cfg.FinalityDepth = n
+		} else {
+			log.Printf("[config] AEGIS_FINALITY_DEPTH=%q is not a valid uint64, ignoring", v)
 		}
 	}
 	if v := os.Getenv("AEGIS_HEALTH_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.HealthInterval = d
+		} else {
+			log.Printf("[config] AEGIS_HEALTH_INTERVAL=%q is not a valid duration, ignoring", v)
 		}
 	}
 	if v := os.Getenv("AEGIS_PROBE_TIMEOUT"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.ProbeTimeout = d
+		} else {
+			log.Printf("[config] AEGIS_PROBE_TIMEOUT=%q is not a valid duration, ignoring", v)
 		}
 	}
 	if v := os.Getenv("AEGIS_LAG_THRESHOLD"); v != "" {
 		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
 			cfg.LagThreshold = n
+		} else {
+			log.Printf("[config] AEGIS_LAG_THRESHOLD=%q is not a valid uint64, ignoring", v)
 		}
 	}
+}
+
+// Validate checks that the Config is internally consistent and safe to use.
+// Call it after Parse() or whenever a Config is constructed manually.
+func (c Config) Validate() error {
+	if len(c.Upstreams) == 0 {
+		return fmt.Errorf("at least one upstream URL is required")
+	}
+	if c.Port < 1 || c.Port > 65535 {
+		return fmt.Errorf("port %d is out of valid range [1, 65535]", c.Port)
+	}
+	if c.MutableTTL <= 0 {
+		return fmt.Errorf("mutable_ttl must be positive, got %s", c.MutableTTL)
+	}
+	if c.ProbeTimeout <= 0 {
+		return fmt.Errorf("probe_timeout must be positive, got %s", c.ProbeTimeout)
+	}
+	if c.HealthInterval <= 0 {
+		return fmt.Errorf("health_interval must be positive, got %s", c.HealthInterval)
+	}
+	if c.ProbeTimeout >= c.HealthInterval {
+		return fmt.Errorf("probe_timeout (%s) must be less than health_interval (%s)", c.ProbeTimeout, c.HealthInterval)
+	}
+	return nil
 }
 
 // Parse builds the final Config by layering all sources in priority order:
@@ -157,15 +203,15 @@ func ApplyEnv(cfg *Config) {
 // Call Parse() once at program startup; it calls flag.Parse() internally.
 func Parse() (Config, error) {
 	// -- flag declarations --------------------------------------------------
-	configFile    := flag.String("config", "", "Path to YAML config file (env AEGIS_CONFIG)")
-	portFlag      := flag.Int("port", 8080, "Port to listen on (env AEGIS_PORT)")
+	configFile := flag.String("config", "", "Path to YAML config file (env AEGIS_CONFIG)")
+	portFlag := flag.Int("port", 8080, "Port to listen on (env AEGIS_PORT)")
 	upstreamsFlag := flag.String("upstreams", "https://eth.llamarpc.com", "Comma-separated upstream RPC URLs (env AEGIS_UPSTREAMS)")
-	mutableTTL    := flag.Duration("mutable-ttl", 12*time.Second, "TTL for mutable cached responses (env AEGIS_MUTABLE_TTL)")
-	maxCache      := flag.Int("max-cache-entries", 10_000, "LRU cap for the response cache, 0=unlimited (env AEGIS_MAX_CACHE_ENTRIES)")
-	finality      := flag.Uint64("finality-depth", 12, "Blocks required to consider a block finalized (env AEGIS_FINALITY_DEPTH)")
-	healthInt     := flag.Duration("health-interval", 15*time.Second, "Health check polling interval (env AEGIS_HEALTH_INTERVAL)")
-	probeTo       := flag.Duration("probe-timeout", 5*time.Second, "Per-node health probe HTTP timeout (env AEGIS_PROBE_TIMEOUT)")
-	lagThresh     := flag.Uint64("lag-threshold", 10, "Max blocks a node may lag before marked unhealthy (env AEGIS_LAG_THRESHOLD)")
+	mutableTTL := flag.Duration("mutable-ttl", 12*time.Second, "TTL for mutable cached responses (env AEGIS_MUTABLE_TTL)")
+	maxCache := flag.Int("max-cache-entries", 10_000, "LRU cap for the response cache, 0=unlimited (env AEGIS_MAX_CACHE_ENTRIES)")
+	finality := flag.Uint64("finality-depth", 12, "Blocks required to consider a block finalized (env AEGIS_FINALITY_DEPTH)")
+	healthInt := flag.Duration("health-interval", 15*time.Second, "Health check polling interval (env AEGIS_HEALTH_INTERVAL)")
+	probeTo := flag.Duration("probe-timeout", 5*time.Second, "Per-node health probe HTTP timeout (env AEGIS_PROBE_TIMEOUT)")
+	lagThresh := flag.Uint64("lag-threshold", 10, "Max blocks a node may lag before marked unhealthy (env AEGIS_LAG_THRESHOLD)")
 	flag.Parse()
 
 	// -- layer 1: defaults --------------------------------------------------
@@ -210,6 +256,9 @@ func Parse() (Config, error) {
 		}
 	})
 
+	if err := cfg.Validate(); err != nil {
+		return cfg, fmt.Errorf("invalid configuration: %w", err)
+	}
 	return cfg, nil
 }
 

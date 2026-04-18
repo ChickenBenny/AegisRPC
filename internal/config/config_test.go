@@ -107,6 +107,59 @@ func TestLoadFile_InvalidDuration(t *testing.T) {
 	assert.Error(t, LoadFile(path, &cfg))
 }
 
+// TestLoadFile_ZeroValueFields verifies that explicitly setting an integer
+// field to 0 in the YAML file is not silently skipped (the pointer-based
+// yamlConfig ensures zero ≠ absent).
+func TestLoadFile_ZeroValueFields(t *testing.T) {
+	yaml := `
+max_cache_entries: 0
+lag_threshold: 0
+`
+	path := writeTemp(t, yaml)
+	cfg := Default()
+	require.NoError(t, LoadFile(path, &cfg))
+
+	assert.Equal(t, 0, cfg.MaxCacheEntries, "max_cache_entries: 0 must override the default 10000")
+	assert.Equal(t, uint64(0), cfg.LagThreshold, "lag_threshold: 0 must override the default 10")
+}
+
+// ─── Validate ───────────────────────────────────────────────────────────────
+
+func TestValidate_ValidConfig(t *testing.T) {
+	cfg := Default()
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestValidate_EmptyUpstreams(t *testing.T) {
+	cfg := Default()
+	cfg.Upstreams = nil
+	assert.ErrorContains(t, cfg.Validate(), "upstream")
+}
+
+func TestValidate_InvalidPort(t *testing.T) {
+	cfg := Default()
+	cfg.Port = 0
+	assert.ErrorContains(t, cfg.Validate(), "port")
+
+	cfg.Port = 65536
+	assert.ErrorContains(t, cfg.Validate(), "port")
+}
+
+func TestValidate_ZeroMutableTTL(t *testing.T) {
+	cfg := Default()
+	cfg.MutableTTL = 0
+	assert.ErrorContains(t, cfg.Validate(), "mutable_ttl")
+}
+
+func TestValidate_ProbeTimeoutGEHealthInterval(t *testing.T) {
+	cfg := Default()
+	cfg.ProbeTimeout = cfg.HealthInterval // equal → invalid
+	assert.ErrorContains(t, cfg.Validate(), "probe_timeout")
+
+	cfg.ProbeTimeout = cfg.HealthInterval + time.Second // greater → also invalid
+	assert.ErrorContains(t, cfg.Validate(), "probe_timeout")
+}
+
 func writeTemp(t *testing.T, content string) string {
 	t.Helper()
 	f, err := os.CreateTemp(t.TempDir(), "aegis-config-*.yaml")
