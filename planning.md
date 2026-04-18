@@ -38,8 +38,8 @@
 
 ## Phase 5.3: WebSocket Reliability
 *Goal: Prevent zombie connections from silently stalling active WebSocket sessions.*
-- [ ] **Task 5.3.1:** Upstream ping/pong heartbeat — send a WebSocket Ping to the upstream every 30s; if no Pong within 10s, treat the connection as dead and trigger failover.
-- [ ] **Task 5.3.2:** Fix `replaySubscriptions` ordering assumption — batch all replay requests first, then collect responses by ID (skip early notifications); handles nodes that push notifications before the subscribe response arrives.
+- [x] **Task 5.3.1:** Upstream ping/pong heartbeat — send a WebSocket Ping to the upstream every 30s; if no Pong within 10s, treat the connection as dead and trigger failover.
+- [x] **Task 5.3.2:** Fix `replaySubscriptions` ordering assumption — batch all replay requests first, then collect responses by ID (skip early notifications); handles nodes that push notifications before the subscribe response arrives.
 - **Learning:** RFC 6455 WebSocket Ping/Pong keepalive. TCP half-open / zombie connection problem in cloud environments.
 
 ## Phase 5.5: Configuration & Environment
