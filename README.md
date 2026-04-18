@@ -21,3 +21,48 @@ AegisRPC aims to be the "Traefik" for Web3. It provides a robust, self-healing, 
 - **Cache:** Redis / In-memory LRU
 - **Observability:** Prometheus + Grafana
 - **Deployment:** Docker / Kubernetes
+
+## 5. Configuration
+
+AegisRPC supports three configuration sources with the following precedence (highest wins):
+
+```
+CLI flags  >  Environment variables  >  YAML config file  >  Built-in defaults
+```
+
+### 5.1 Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `AEGIS_CONFIG` | _(none)_ | Path to a YAML config file |
+| `AEGIS_PORT` | `8080` | TCP port the proxy listens on |
+| `AEGIS_UPSTREAMS` | `https://eth.llamarpc.com` | Comma-separated list of upstream RPC URLs |
+| `AEGIS_MUTABLE_TTL` | `12s` | TTL for mutable cached responses (e.g. `eth_blockNumber`) |
+| `AEGIS_MAX_CACHE_ENTRIES` | `10000` | LRU cap for the response cache (`0` = unlimited) |
+| `AEGIS_FINALITY_DEPTH` | `12` | Number of block confirmations required to consider a block finalized |
+| `AEGIS_HEALTH_INTERVAL` | `15s` | How often to poll each upstream for health |
+| `AEGIS_PROBE_TIMEOUT` | `5s` | HTTP timeout for each individual health probe request |
+| `AEGIS_LAG_THRESHOLD` | `10` | Max blocks a node may lag behind the best before being marked unhealthy |
+
+Duration values accept Go duration strings: `5s`, `1m`, `500ms`, etc.
+
+### 5.2 YAML Config File
+
+Pass the path via `--config <file>` or `AEGIS_CONFIG=<file>`. Only fields present in the file override defaults; omitted fields keep their default values.
+
+```yaml
+port: 8080
+upstreams:
+  - https://eth.llamarpc.com
+  - https://rpc.ankr.com/eth
+mutable_ttl: 12s
+max_cache_entries: 10000
+finality_depth: 12
+health_interval: 15s
+probe_timeout: 5s
+lag_threshold: 10
+```
+
+### 5.3 CLI Flags
+
+Every parameter is also available as a flag. Run `aegis-rpc --help` to see all options. CLI flags override both ENV variables and the config file.
