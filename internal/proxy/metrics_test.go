@@ -104,6 +104,71 @@ func TestMetrics_CacheMiss(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TestMetrics_Error verifies that an invalid JSON body records status="error".
+// No upstream is needed — the handler returns before routing.
+// ---------------------------------------------------------------------------
+func TestMetrics_Error(t *testing.T) {
+	h := newHandlerForMetrics(t, "http://127.0.0.1:0") // unreachable; never reached
+
+	beforeErr := testutil.ToFloat64(metrics.RequestsTotal.WithLabelValues("unknown", "error"))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, 1.0, testutil.ToFloat64(metrics.RequestsTotal.WithLabelValues("unknown", "error"))-beforeErr,
+		"RequestsTotal{status=error} should increment by 1 on invalid JSON")
+}
+
+// ---------------------------------------------------------------------------
+// TestMetrics_RateLimited verifies that a 429 from upstream records
+// status="rate_limited" in RequestsTotal.
+// ---------------------------------------------------------------------------
+func TestMetrics_RateLimited(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	h := newHandlerForMetrics(t, srv.URL)
+
+	beforeRL := testutil.ToFloat64(metrics.RequestsTotal.WithLabelValues("eth_blockNumber", "rate_limited"))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, rpcPost("eth_blockNumber", `[]`))
+
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	assert.Equal(t, 1.0, testutil.ToFloat64(metrics.RequestsTotal.WithLabelValues("eth_blockNumber", "rate_limited"))-beforeRL,
+		"RequestsTotal{status=rate_limited} should increment by 1 on upstream 429")
+}
+
+// ---------------------------------------------------------------------------
+// TestMetrics_Uncacheable verifies that a method classified as LayerUncacheable
+// records status="uncacheable" when the upstream succeeds.
+// ---------------------------------------------------------------------------
+func TestMetrics_Uncacheable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":true}`))
+	}))
+	defer srv.Close()
+
+	h := newHandlerForMetrics(t, srv.URL)
+
+	beforeUC := testutil.ToFloat64(metrics.RequestsTotal.WithLabelValues("eth_sendRawTransaction", "uncacheable"))
+
+	rec := httptest.NewRecorder()
+	// eth_sendRawTransaction is classified LayerUncacheable by FinalityChecker.
+	h.ServeHTTP(rec, rpcPost("eth_sendRawTransaction", `["0xdeadbeef"]`))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, 1.0, testutil.ToFloat64(metrics.RequestsTotal.WithLabelValues("eth_sendRawTransaction", "uncacheable"))-beforeUC,
+		"RequestsTotal{status=uncacheable} should increment by 1 for uncacheable methods")
+}
+
+// ---------------------------------------------------------------------------
 // TestMetrics_RequestDuration verifies that the latency histogram is
 // observed for every request.
 //

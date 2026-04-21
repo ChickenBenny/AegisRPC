@@ -19,7 +19,7 @@ import (
 // Server owns the http.Server and its mux. Construct with New, then call
 // Start in a goroutine and Shutdown on termination.
 type Server struct {
-	http *http.Server
+	srv *http.Server
 }
 
 // New builds the route table and returns a ready-to-start Server.
@@ -41,7 +41,7 @@ func New(port int, handler *proxy.Handler, pool *upstream.Pool) *Server {
 	mux.Handle("/metrics", promhttp.Handler())
 
 	return &Server{
-		http: &http.Server{
+		srv: &http.Server{
 			Addr:    fmt.Sprintf(":%d", port),
 			Handler: mux,
 		},
@@ -49,12 +49,12 @@ func New(port int, handler *proxy.Handler, pool *upstream.Pool) *Server {
 }
 
 // Addr returns the listen address (e.g. ":8080") for logging.
-func (s *Server) Addr() string { return s.http.Addr }
+func (s *Server) Addr() string { return s.srv.Addr }
 
 // Start blocks on ListenAndServe. Returns nil on graceful shutdown
 // (http.ErrServerClosed is treated as success).
 func (s *Server) Start() error {
-	if err := s.http.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := s.srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil
@@ -64,5 +64,5 @@ func (s *Server) Start() error {
 func (s *Server) Shutdown(timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return s.http.Shutdown(ctx)
+	return s.srv.Shutdown(ctx)
 }

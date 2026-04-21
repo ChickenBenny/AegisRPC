@@ -11,7 +11,6 @@ import (
 	"github.com/ChickenBenny/AegisRPC/internal/cache"
 	"github.com/ChickenBenny/AegisRPC/internal/config"
 	"github.com/ChickenBenny/AegisRPC/internal/httpapi"
-	_ "github.com/ChickenBenny/AegisRPC/internal/metrics" // registers Prometheus metrics
 	"github.com/ChickenBenny/AegisRPC/internal/proxy"
 	"github.com/ChickenBenny/AegisRPC/internal/router"
 	"github.com/ChickenBenny/AegisRPC/internal/upstream"

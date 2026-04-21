@@ -79,7 +79,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Uncacheable: bypass cache entirely.
 	if layer == cache.LayerUncacheable {
 		status = "uncacheable"
-		h.proxyDirect(w, r, body, req.Method)
+		if err := h.proxyDirect(w, r, body, req.Method); err != nil {
+			status = "error"
+		}
 		return
 	}
 
@@ -146,7 +148,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // proxyDirect forwards the request to the upstream without any caching.
 // It tries every capable healthy node before giving up, buffering each response so
 // that headers are never written to w until a successful response is found.
-func (h *Handler) proxyDirect(w http.ResponseWriter, r *http.Request, body []byte, method string) {
+// Returns an error if no upstream could serve the request.
+func (h *Handler) proxyDirect(w http.ResponseWriter, r *http.Request, body []byte, method string) error {
 	n := len(h.router.Nodes())
 	for i := 0; i < n; i++ {
 		node, err := h.router.Route(method)
@@ -180,9 +183,10 @@ func (h *Handler) proxyDirect(w http.ResponseWriter, r *http.Request, body []byt
 		}
 		w.WriteHeader(buf.status)
 		w.Write(buf.body.Bytes())
-		return
+		return nil
 	}
 	http.Error(w, "no healthy upstream available", http.StatusBadGateway)
+	return errors.New("no healthy upstream available")
 }
 
 // fetchFromUpstream sends the request to an upstream node and returns the raw
