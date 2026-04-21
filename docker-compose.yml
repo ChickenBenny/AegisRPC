@@ -1,0 +1,22 @@
+services:
+  aegis-rpc:
+    build: .
+    ports:
+      - "8545:8545"
+    environment:
+      AEGIS_PORT: "8545"
+      AEGIS_UPSTREAMS: "https://eth.llamarpc.com"
+      AEGIS_MUTABLE_TTL: "12s"
+      AEGIS_HEALTH_INTERVAL: "15s"
+      AEGIS_PROBE_TIMEOUT: "5s"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.3.1
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - aegis-rpc
+    restart: unless-stopped
