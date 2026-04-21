@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ChickenBenny/AegisRPC/internal/cache"
+	"github.com/ChickenBenny/AegisRPC/internal/metrics"
 	"github.com/ChickenBenny/AegisRPC/internal/models"
 	"github.com/ChickenBenny/AegisRPC/internal/router"
 	"golang.org/x/sync/singleflight"
@@ -44,25 +45,43 @@ func NewHandler(rtr *router.Router, c *cache.Cache, mutableTTL time.Duration, fc
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// --- Observability setup ---
+	// `method` and `status` are updated throughout this function.
+	// The deferred closure reads their final values when the function returns,
+	// so we only need one recording point no matter how many return paths exist.
+	method := "unknown"
+	status := "ok"
+	start := time.Now()
+	defer func() {
+		metrics.RequestsTotal.WithLabelValues(method, status).Inc()
+		metrics.RequestDuration.WithLabelValues(method).Observe(time.Since(start).Seconds())
+	}()
+
 	// Read body so we can inspect the method and use it multiple times.
 	r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		status = "error"
 		http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 
 	var req models.RPCRequest
 	if err := json.Unmarshal(body, &req); err != nil {
+		status = "error"
 		http.Error(w, "invalid JSON-RPC request", http.StatusBadRequest)
 		return
 	}
+	method = req.Method // now we know the real method name
 
 	layer := h.finality.Classify(req.Method, req.Params)
 
 	// Uncacheable: bypass cache entirely.
 	if layer == cache.LayerUncacheable {
-		h.proxyDirect(w, r, body, req.Method)
+		status = "uncacheable"
+		if err := h.proxyDirect(w, r, body, req.Method); err != nil {
+			status = "error"
+		}
 		return
 	}
 
@@ -70,18 +89,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Negative cache hit: upstream was recently unhealthy, fail fast.
 	if _, ok := h.cache.Get("neg::" + key); ok {
+		metrics.CacheRequests.WithLabelValues("neg_hit").Inc()
+		status = "neg_hit"
 		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
 	}
 
 	// Cache hit: serve immediately.
 	if cached, ok := h.cache.Get(key); ok {
+		metrics.CacheRequests.WithLabelValues("hit").Inc()
+		status = "cache_hit"
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(cached)
 		return
 	}
 
-	// Cache miss: use singleflight to ensure only one upstream call per key.
+	// Cache miss: we will call the upstream via singleflight.
+	metrics.CacheRequests.WithLabelValues("miss").Inc()
+
+	// Use singleflight to ensure only one upstream call per key.
 	v, err, _ := h.sf.Do(key, func() (any, error) {
 		resp, err := h.fetchFromUpstream(r, body, req.Method)
 		if err != nil {
@@ -102,11 +128,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var rl *rateLimitedError
 		if errors.As(err, &rl) {
+			status = "rate_limited"
 			if rl.retryAfter != "" {
 				w.Header().Set("Retry-After", rl.retryAfter)
 			}
 			http.Error(w, "rate limited", http.StatusTooManyRequests)
 		} else {
+			status = "error"
 			http.Error(w, "upstream error", http.StatusBadGateway)
 		}
 		return
@@ -120,7 +148,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // proxyDirect forwards the request to the upstream without any caching.
 // It tries every capable healthy node before giving up, buffering each response so
 // that headers are never written to w until a successful response is found.
-func (h *Handler) proxyDirect(w http.ResponseWriter, r *http.Request, body []byte, method string) {
+// Returns an error if no upstream could serve the request.
+func (h *Handler) proxyDirect(w http.ResponseWriter, r *http.Request, body []byte, method string) error {
 	n := len(h.router.Nodes())
 	for i := 0; i < n; i++ {
 		node, err := h.router.Route(method)
@@ -154,9 +183,10 @@ func (h *Handler) proxyDirect(w http.ResponseWriter, r *http.Request, body []byt
 		}
 		w.WriteHeader(buf.status)
 		w.Write(buf.body.Bytes())
-		return
+		return nil
 	}
 	http.Error(w, "no healthy upstream available", http.StatusBadGateway)
+	return errors.New("no healthy upstream available")
 }
 
 // fetchFromUpstream sends the request to an upstream node and returns the raw
