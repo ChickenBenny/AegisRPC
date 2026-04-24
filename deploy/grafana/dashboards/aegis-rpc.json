@@ -64,21 +64,13 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "sum(rate(aegis_rpc_requests_total[1m]))",
-          "legendFormat": "total",
+          "expr": "sum by (method) (rate(aegis_rpc_requests_total[1m]))",
+          "legendFormat": "{{method}}",
           "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "editorMode": "code",
-          "expr": "sum by (status) (rate(aegis_rpc_requests_total[1m]))",
-          "legendFormat": "{{status}}",
-          "range": true,
-          "refId": "B"
         }
       ],
-      "title": "Request Rate (RPS)",
+      "title": "Request Rate by Method (RPS)",
       "type": "timeseries"
     },
     {
@@ -223,7 +215,7 @@
           },
           "unit": "s",
           "min": 0,
-          "max": 2
+          "max": 5
         },
         "overrides": []
       },
@@ -302,7 +294,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "sum(rate(aegis_cache_requests_total{result=\"hit\"}[1m])) / sum(rate(aegis_cache_requests_total[1m]))",
+          "expr": "sum(rate(aegis_cache_requests_total{result=\"hit\"}[1m])) / (sum(rate(aegis_cache_requests_total[1m])) or vector(1))",
           "legendFormat": "hit rate",
           "range": true,
           "refId": "A"
@@ -346,7 +338,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "editorMode": "code",
-          "expr": "sum(rate(aegis_cache_requests_total{result=\"hit\"}[1m])) / sum(rate(aegis_cache_requests_total[1m]))",
+          "expr": "sum(rate(aegis_cache_requests_total{result=\"hit\"}[1m])) / (sum(rate(aegis_cache_requests_total[1m])) or vector(1))",
           "legendFormat": "hit rate",
           "range": false,
           "instant": true,

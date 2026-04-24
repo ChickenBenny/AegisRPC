@@ -72,7 +72,7 @@ burst() {
   local params="$3"
   local count="$4"
   local ok=0
-  for _ in $(seq 1 "$count"); do
+  for ((i = 0; i < count; i++)); do
     code=$(rpc "$method" "$params")
     [ "$code" = "200" ] && ok=$((ok + 1))
   done

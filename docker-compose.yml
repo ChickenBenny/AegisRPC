@@ -27,7 +27,7 @@ services:
       - "3000:3000"
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
     volumes:
       - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
