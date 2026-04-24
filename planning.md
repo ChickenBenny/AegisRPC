@@ -53,7 +53,7 @@
 ## Phase 6: Observability & Cloud
 *Goal: Monitoring and Deployment.*
 - [x] **Task 6.1:** Integrate Prometheus Metrics (Latency, RPS, Cache Hit Rate).
-- [ ] **Task 6.2:** Develop a simple Monitoring Dashboard.
+- [x] **Task 6.2:** Develop a simple Monitoring Dashboard.
 - [ ] **Task 6.3:** Support Docker Labels / K8s Ingress integration.
 - **Learning:** Cloud-native monitoring and service discovery.
 
