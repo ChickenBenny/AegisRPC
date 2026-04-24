@@ -9,12 +9,17 @@ services:
       AEGIS_MUTABLE_TTL: "12s"
       AEGIS_HEALTH_INTERVAL: "15s"
       AEGIS_PROBE_TIMEOUT: "5s"
+    labels:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "8545"
+      prometheus.io/path: "/metrics"
     restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:v3.3.1
     volumes:
       - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
       - "9090:9090"
     depends_on:

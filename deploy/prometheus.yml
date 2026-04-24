@@ -3,6 +3,35 @@ global:
   evaluation_interval: 5s
 
 scrape_configs:
-  - job_name: aegis_rpc
-    static_configs:
-      - targets: ["aegis-rpc:8545"]
+  # Docker service discovery: automatically scrape any container that has
+  # the label prometheus.io/scrape=true.  Prometheus reads the Docker
+  # socket to enumerate running containers and applies the relabel rules
+  # below to build the scrape target from the container's own labels.
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 15s
+
+    relabel_configs:
+      # 1. Drop containers that have not opted in to scraping.
+      - source_labels: [__meta_docker_container_label_prometheus_io_scrape]
+        action: keep
+        regex: "true"
+
+      # 2. Build __address__ from the container's network IP and the
+      #    prometheus.io/port label (e.g. "172.18.0.3:8545").
+      - source_labels:
+          - __meta_docker_network_ip
+          - __meta_docker_container_label_prometheus_io_port
+        separator: ":"
+        target_label: __address__
+
+      # 3. Override the metrics path if the container specifies one.
+      - source_labels: [__meta_docker_container_label_prometheus_io_path]
+        target_label: __metrics_path__
+        regex: (.+)
+
+      # 4. Set the job label to the container name (strip the leading /).
+      - source_labels: [__meta_docker_container_name]
+        regex: /(.+)
+        target_label: job
