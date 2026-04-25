@@ -17,6 +17,7 @@ services:
 
   prometheus:
     image: prom/prometheus:v3.3.1
+    profiles: [monitoring]
     volumes:
       - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -28,6 +29,7 @@ services:
 
   grafana:
     image: grafana/grafana:11.6.1
+    profiles: [monitoring]
     ports:
       - "3000:3000"
     environment:
