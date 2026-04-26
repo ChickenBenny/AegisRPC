@@ -7,6 +7,16 @@ kind: Kustomization
 resources:
   - namespace.yaml
   - configmap.yaml
+  - secret.yaml
   - deployment.yaml
   - service.yaml
   - ingress.yaml
+  - pdb.yaml
+
+# Override the image tag per environment. Example:
+#   kustomize edit set image ghcr.io/chickenbenny/aegis-rpc=:v1.2.3
+# Or set a specific digest for fully reproducible builds:
+#   kustomize edit set image ghcr.io/chickenbenny/aegis-rpc=@sha256:<digest>
+images:
+  - name: ghcr.io/chickenbenny/aegis-rpc
+    newTag: latest

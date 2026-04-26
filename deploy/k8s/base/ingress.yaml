@@ -12,10 +12,11 @@ metadata:
     # ws:// connections before the client or server closes them.
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # HTTP/1.1 is required for WebSocket upgrade; the NGINX Ingress controller
+    # automatically forwards the Upgrade/Connection headers when this is set,
+    # so no configuration-snippet is needed (and configuration-snippet is
+    # disabled by default in NGINX Ingress >= 1.9 for security reasons).
     nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
-    nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_set_header Upgrade $http_upgrade;
-      proxy_set_header Connection "upgrade";
 spec:
   ingressClassName: nginx
   rules:

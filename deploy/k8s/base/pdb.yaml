@@ -1,0 +1,15 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aegis-rpc
+  namespace: aegis-rpc
+  labels:
+    app.kubernetes.io/name: aegis-rpc
+spec:
+  # Ensure at least one replica is available during voluntary disruptions
+  # (node drains, cluster upgrades). With replicas: 2 this prevents both
+  # pods from being evicted simultaneously.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aegis-rpc
