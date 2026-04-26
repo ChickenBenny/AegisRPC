@@ -7,6 +7,7 @@ metadata:
     app.kubernetes.io/name: aegis-rpc
 data:
   AEGIS_PORT: "8545"
+  # EXAMPLE — replace with your own Ethereum JSON-RPC endpoint before deploying.
   AEGIS_UPSTREAMS: "https://eth.llamarpc.com"
   AEGIS_MUTABLE_TTL: "12s"
   AEGIS_HEALTH_INTERVAL: "15s"

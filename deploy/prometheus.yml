@@ -9,6 +9,9 @@ scrape_configs:
   # below to build the scrape target from the container's own labels.
   - job_name: docker
     docker_sd_configs:
+      # Linux default path. Adjust for your OS:
+      #   macOS Docker Desktop : $HOME/.docker/run/docker.sock
+      #   Windows Docker Desktop: npipe:////./pipe/docker_engine
       - host: unix:///var/run/docker.sock
         refresh_interval: 15s
 

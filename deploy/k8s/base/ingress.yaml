@@ -19,6 +19,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
+    # TODO: replace with your actual domain before deploying.
     - host: aegis-rpc.example.com
       http:
         paths:

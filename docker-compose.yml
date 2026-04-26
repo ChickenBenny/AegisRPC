@@ -20,6 +20,8 @@ services:
     profiles: [monitoring]
     volumes:
       - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # DEV ONLY — grants broad host access. Remove for production;
+      # use a static scrape target in prometheus.yml instead.
       - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
       - "9090:9090"

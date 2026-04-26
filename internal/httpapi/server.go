@@ -27,6 +27,7 @@ type Server struct {
 //	/         POST  → JSON-RPC handler
 //	/ws       GET   → WebSocket proxy (upgrade)
 //	/metrics  GET   → Prometheus scrape endpoint
+//	/healthz  GET   → liveness / readiness probe (always fast, no side effects)
 func New(port int, handler *proxy.Handler, pool *upstream.Pool) *Server {
 	mux := http.NewServeMux()
 
@@ -39,6 +40,9 @@ func New(port int, handler *proxy.Handler, pool *upstream.Pool) *Server {
 	})
 	mux.HandleFunc("/ws", proxy.ServeWS(pool))
 	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
 
 	return &Server{
 		srv: &http.Server{
