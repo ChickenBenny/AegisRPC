@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aegis-rpc-config
+  namespace: aegis-rpc
+  labels:
+    app.kubernetes.io/name: aegis-rpc
+data:
+  AEGIS_PORT: "8545"
+  AEGIS_MUTABLE_TTL: "12s"
+  AEGIS_HEALTH_INTERVAL: "15s"
+  AEGIS_PROBE_TIMEOUT: "5s"
+  AEGIS_LAG_THRESHOLD: "5"

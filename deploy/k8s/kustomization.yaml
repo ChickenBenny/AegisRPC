@@ -1,0 +1,10 @@
+# Convenience alias — delegates to the base overlay.
+# Equivalent to: kubectl apply -k deploy/k8s/base/
+#
+# To include the Prometheus Operator ServiceMonitor, use:
+#   kubectl apply -k deploy/k8s/overlays/monitoring/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - base/

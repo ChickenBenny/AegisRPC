@@ -9,12 +9,20 @@ services:
       AEGIS_MUTABLE_TTL: "12s"
       AEGIS_HEALTH_INTERVAL: "15s"
       AEGIS_PROBE_TIMEOUT: "5s"
+    labels:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "8545"
+      prometheus.io/path: "/metrics"
     restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:v3.3.1
+    profiles: [monitoring]
     volumes:
       - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # DEV ONLY — grants broad host access. Remove for production;
+      # use a static scrape target in prometheus.yml instead.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
       - "9090:9090"
     depends_on:
@@ -23,6 +31,7 @@ services:
 
   grafana:
     image: grafana/grafana:11.6.1
+    profiles: [monitoring]
     ports:
       - "3000:3000"
     environment:

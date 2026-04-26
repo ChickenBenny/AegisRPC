@@ -54,7 +54,7 @@
 *Goal: Monitoring and Deployment.*
 - [x] **Task 6.1:** Integrate Prometheus Metrics (Latency, RPS, Cache Hit Rate).
 - [x] **Task 6.2:** Develop a simple Monitoring Dashboard.
-- [ ] **Task 6.3:** Support Docker Labels / K8s Ingress integration.
+- [x] **Task 6.3:** Support Docker Labels / K8s Ingress integration.
 - **Learning:** Cloud-native monitoring and service discovery.
 
 ## Phase 7: Multi-Chain Support

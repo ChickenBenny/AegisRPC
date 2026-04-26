@@ -1,0 +1,30 @@
+# ServiceMonitor for the Prometheus Operator (kube-prometheus-stack).
+# If you are running vanilla Prometheus, use:
+#   kubectl apply -k deploy/k8s/base/
+# and rely on the prometheus.io/* pod annotations in deployment.yaml instead.
+#
+# If you use the Prometheus Operator, use:
+#   kubectl apply -k deploy/k8s/overlays/monitoring/
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: aegis-rpc
+  namespace: aegis-rpc
+  labels:
+    app.kubernetes.io/name: aegis-rpc
+    # This label must match the Prometheus Operator's serviceMonitorSelector.
+    # The default kube-prometheus-stack value is release: prometheus.
+    # To override per environment without editing this file, add to your
+    # overlay's kustomization.yaml:
+    #   commonLabels:
+    #     release: <your-prometheus-operator-release-name>
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aegis-rpc
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s

@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis-rpc
+  namespace: aegis-rpc
+  labels:
+    app.kubernetes.io/name: aegis-rpc
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aegis-rpc
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aegis-rpc
+      # Annotations for Prometheus annotation-based scraping.
+      # Used by vanilla Prometheus with kubernetes_sd_configs / pod role.
+      # If you use the Prometheus Operator, rely on ServiceMonitor instead.
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8545"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Run as a non-root user to limit the blast radius of a container escape.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      containers:
+        - name: aegis-rpc
+          # Pin to a specific digest or version tag in production; never use
+          # :latest — it makes rollbacks unreliable and violates GitOps hygiene.
+          # Override via Kustomize: kustomize edit set image ghcr.io/chickenbenny/aegis-rpc=:<tag>
+          image: ghcr.io/chickenbenny/aegis-rpc:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8545
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: aegis-rpc-config
+          env:
+            # AEGIS_UPSTREAMS is loaded from a Secret because it may contain
+            # API keys. Create the secret before applying:
+            #   kubectl create secret generic aegis-rpc-upstreams \
+            #     --from-literal=AEGIS_UPSTREAMS=https://your-endpoint \
+            #     -n aegis-rpc
+            - name: AEGIS_UPSTREAMS
+              valueFrom:
+                secretKeyRef:
+                  name: aegis-rpc-upstreams
+                  key: AEGIS_UPSTREAMS
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 5
