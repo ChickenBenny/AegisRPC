@@ -39,6 +39,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Cache backend error: %v", err)
 	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			log.Printf("Cache close error: %v", err)
+		}
+	}()
 	rtr := router.New(pool)
 	h := proxy.NewHandler(rtr, store, cfg.MutableTTL, fc)
 

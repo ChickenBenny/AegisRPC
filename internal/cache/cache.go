@@ -136,6 +136,11 @@ func (c *Cache) Size() int {
 	return c.lru.Len()
 }
 
+// Close satisfies the Store interface. The in-memory cache holds no
+// external resources — its cleanup goroutine is owned by the context
+// passed to NewCache and stops when that context is cancelled.
+func (c *Cache) Close() error { return nil }
+
 // evictLRU removes the least-recently-used entry. Must be called with mu held.
 func (c *Cache) evictLRU() {
 	el := c.lru.Back()

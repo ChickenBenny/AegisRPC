@@ -11,10 +11,14 @@ import "time"
 //
 // A ttl of 0 means "never expire" — used for immutable responses such as
 // finalized block bodies and transaction receipts.
+//
+// Close releases any resources held by the store (network connections for
+// remote backends). The in-process Cache implements it as a no-op.
 type Store interface {
 	Get(key string) ([]byte, bool)
 	Set(key string, value []byte, ttl time.Duration)
 	Delete(key string)
+	Close() error
 }
 
 // Compile-time assertion that *Cache satisfies Store. If anyone changes the
