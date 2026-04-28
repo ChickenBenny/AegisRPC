@@ -35,9 +35,17 @@ func main() {
 	pool.StartHealthChecks(ctx, cfg.HealthInterval, cfg.LagThreshold, cfg.ProbeTimeout, fc.SetHead)
 	log.Printf("Finality depth: %d blocks", cfg.FinalityDepth)
 
-	c := cache.NewCache(ctx, 5*time.Minute, cfg.MaxCacheEntries)
+	store, err := buildCacheStore(ctx, cfg)
+	if err != nil {
+		log.Fatalf("Cache backend error: %v", err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			log.Printf("Cache close error: %v", err)
+		}
+	}()
 	rtr := router.New(pool)
-	h := proxy.NewHandler(rtr, c, cfg.MutableTTL, fc)
+	h := proxy.NewHandler(rtr, store, cfg.MutableTTL, fc)
 
 	srv := httpapi.New(cfg.Port, h, pool)
 
@@ -55,4 +63,24 @@ func main() {
 		log.Printf("Shutdown error: %v", err)
 	}
 	log.Println("Stopped.")
+}
+
+// buildCacheStore wires the cache backend chosen in config. The default
+// in-memory LRU has zero external dependencies; switching to redis is opt-in
+// for users who run multiple AegisRPC replicas and want a shared hit-rate.
+func buildCacheStore(ctx context.Context, cfg config.Config) (cache.Store, error) {
+	switch cfg.CacheBackend {
+	case "redis":
+		store, err := cache.NewRedisStore(ctx, cfg.RedisURL)
+		if err != nil {
+			return nil, err
+		}
+		// Log the redacted address from the parsed URL — never the raw
+		// AEGIS_REDIS_URL value, which may contain a password.
+		log.Printf("Cache backend: redis (%s)", store.Addr())
+		return store, nil
+	default:
+		log.Printf("Cache backend: memory (max %d entries)", cfg.MaxCacheEntries)
+		return cache.NewCache(ctx, 5*time.Minute, cfg.MaxCacheEntries), nil
+	}
 }

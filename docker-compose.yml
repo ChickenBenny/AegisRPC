@@ -44,3 +44,18 @@ services:
     depends_on:
       - prometheus
     restart: unless-stopped
+
+  # Optional shared cache for multi-replica deployments. Enable with:
+  #   docker compose --profile ha up -d
+  # The aegis-rpc container needs AEGIS_CACHE_BACKEND=redis and AEGIS_REDIS_URL
+  # to point here; see README for the recommended ha override file.
+  redis:
+    image: redis:7.4-alpine
+    profiles: [ha]
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    # Bind to loopback only — other compose services reach Redis at
+    # redis:6379 over the internal network. Removing this block entirely
+    # is also fine; we keep it for redis-cli debugging from the host.
+    ports:
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped

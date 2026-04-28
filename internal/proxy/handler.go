@@ -29,13 +29,13 @@ func (e *rateLimitedError) Error() string { return "upstream rate limited" }
 // with integrated caching, singleflight coalescing, and finality-aware classification.
 type Handler struct {
 	router     *router.Router
-	cache      *cache.Cache
+	cache      cache.Store
 	finality   *cache.FinalityChecker
 	sf         singleflight.Group
 	mutableTTL time.Duration
 }
 
-func NewHandler(rtr *router.Router, c *cache.Cache, mutableTTL time.Duration, fc *cache.FinalityChecker) *Handler {
+func NewHandler(rtr *router.Router, c cache.Store, mutableTTL time.Duration, fc *cache.FinalityChecker) *Handler {
 	return &Handler{
 		router:     rtr,
 		cache:      c,

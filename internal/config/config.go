@@ -22,6 +22,12 @@ type Config struct {
 	HealthInterval  time.Duration
 	ProbeTimeout    time.Duration
 	LagThreshold    uint64
+	// CacheBackend selects the cache implementation: "memory" (default,
+	// per-process LRU) or "redis" (shared across replicas).
+	CacheBackend string
+	// RedisURL is the connection string used when CacheBackend="redis",
+	// e.g. redis://localhost:6379/0 or redis://:password@host:6379/0.
+	RedisURL string
 }
 
 // Default returns a Config populated with production-ready defaults.
@@ -35,6 +41,8 @@ func Default() Config {
 		HealthInterval:  15 * time.Second,
 		ProbeTimeout:    5 * time.Second,
 		LagThreshold:    10,
+		CacheBackend:    "memory",
+		RedisURL:        "",
 	}
 }
 
@@ -53,6 +61,8 @@ type yamlConfig struct {
 	HealthInterval  string   `yaml:"health_interval"`
 	ProbeTimeout    string   `yaml:"probe_timeout"`
 	LagThreshold    *uint64  `yaml:"lag_threshold"`
+	CacheBackend    string   `yaml:"cache_backend"`
+	RedisURL        string   `yaml:"redis_url"`
 }
 
 // LoadFile reads a YAML config file and merges non-zero values into cfg.
@@ -104,6 +114,12 @@ func LoadFile(path string, cfg *Config) error {
 	}
 	if yc.LagThreshold != nil {
 		cfg.LagThreshold = *yc.LagThreshold
+	}
+	if yc.CacheBackend != "" {
+		cfg.CacheBackend = yc.CacheBackend
+	}
+	if yc.RedisURL != "" {
+		cfg.RedisURL = yc.RedisURL
 	}
 
 	return nil
@@ -170,6 +186,12 @@ func ApplyEnv(cfg *Config) {
 			log.Printf("[config] AEGIS_LAG_THRESHOLD=%q is not a valid uint64, ignoring", v)
 		}
 	}
+	if v := os.Getenv("AEGIS_CACHE_BACKEND"); v != "" {
+		cfg.CacheBackend = v
+	}
+	if v := os.Getenv("AEGIS_REDIS_URL"); v != "" {
+		cfg.RedisURL = v
+	}
 }
 
 // Validate checks that the Config is internally consistent and safe to use.
@@ -193,6 +215,16 @@ func (c Config) Validate() error {
 	if c.ProbeTimeout >= c.HealthInterval {
 		return fmt.Errorf("probe_timeout (%s) must be less than health_interval (%s)", c.ProbeTimeout, c.HealthInterval)
 	}
+	switch strings.ToLower(strings.TrimSpace(c.CacheBackend)) {
+	case "memory":
+		// no extra constraints
+	case "redis":
+		if c.RedisURL == "" {
+			return fmt.Errorf("cache_backend=redis requires redis_url to be set (env AEGIS_REDIS_URL)")
+		}
+	default:
+		return fmt.Errorf("cache_backend %q is not valid (allowed: memory, redis)", c.CacheBackend)
+	}
 	return nil
 }
 
@@ -212,6 +244,8 @@ func Parse() (Config, error) {
 	healthInt := flag.Duration("health-interval", 15*time.Second, "Health check polling interval (env AEGIS_HEALTH_INTERVAL)")
 	probeTo := flag.Duration("probe-timeout", 5*time.Second, "Per-node health probe HTTP timeout (env AEGIS_PROBE_TIMEOUT)")
 	lagThresh := flag.Uint64("lag-threshold", 10, "Max blocks a node may lag before marked unhealthy (env AEGIS_LAG_THRESHOLD)")
+	cacheBackend := flag.String("cache-backend", "memory", "Cache backend: memory or redis (env AEGIS_CACHE_BACKEND)")
+	redisURL := flag.String("redis-url", "", "Redis connection URL when cache-backend=redis (env AEGIS_REDIS_URL)")
 	flag.Parse()
 
 	// -- layer 1: defaults --------------------------------------------------
@@ -253,8 +287,16 @@ func Parse() (Config, error) {
 			cfg.ProbeTimeout = *probeTo
 		case "lag-threshold":
 			cfg.LagThreshold = *lagThresh
+		case "cache-backend":
+			cfg.CacheBackend = *cacheBackend
+		case "redis-url":
+			cfg.RedisURL = *redisURL
 		}
 	})
+
+	// Normalise the cache backend value once so downstream callers can rely
+	// on the canonical lowercase form when matching.
+	cfg.CacheBackend = strings.ToLower(strings.TrimSpace(cfg.CacheBackend))
 
 	if err := cfg.Validate(); err != nil {
 		return cfg, fmt.Errorf("invalid configuration: %w", err)
