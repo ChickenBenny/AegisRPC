@@ -215,7 +215,7 @@ func (c Config) Validate() error {
 	if c.ProbeTimeout >= c.HealthInterval {
 		return fmt.Errorf("probe_timeout (%s) must be less than health_interval (%s)", c.ProbeTimeout, c.HealthInterval)
 	}
-	switch c.CacheBackend {
+	switch strings.ToLower(strings.TrimSpace(c.CacheBackend)) {
 	case "memory":
 		// no extra constraints
 	case "redis":
@@ -293,6 +293,10 @@ func Parse() (Config, error) {
 			cfg.RedisURL = *redisURL
 		}
 	})
+
+	// Normalise the cache backend value once so downstream callers can rely
+	// on the canonical lowercase form when matching.
+	cfg.CacheBackend = strings.ToLower(strings.TrimSpace(cfg.CacheBackend))
 
 	if err := cfg.Validate(); err != nil {
 		return cfg, fmt.Errorf("invalid configuration: %w", err)
