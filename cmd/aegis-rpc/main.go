@@ -75,7 +75,9 @@ func buildCacheStore(ctx context.Context, cfg config.Config) (cache.Store, error
 		if err != nil {
 			return nil, err
 		}
-		log.Printf("Cache backend: redis (%s)", cfg.RedisURL)
+		// Log the redacted address from the parsed URL — never the raw
+		// AEGIS_REDIS_URL value, which may contain a password.
+		log.Printf("Cache backend: redis (%s)", store.Addr())
 		return store, nil
 	default:
 		log.Printf("Cache backend: memory (max %d entries)", cfg.MaxCacheEntries)
