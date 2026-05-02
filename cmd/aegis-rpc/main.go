@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -19,29 +19,35 @@ import (
 func main() {
 	cfg, err := config.Parse()
 	if err != nil {
-		log.Fatalf("Config error: %v", err)
+		// Logger is not configured yet; use stderr directly with a stable prefix
+		// so config-failure errors look the same regardless of LogFormat.
+		slog.Error("config error", "err", err)
+		os.Exit(1)
 	}
+	setupLogger(cfg)
 
 	pool, err := upstream.NewPool(cfg.Upstreams)
 	if err != nil {
-		log.Fatalf("Failed to create upstream pool: %v", err)
+		slog.Error("failed to create upstream pool", "err", err)
+		os.Exit(1)
 	}
-	log.Printf("Loaded %d upstream(s)", len(cfg.Upstreams))
+	slog.Info("upstreams loaded", "count", len(cfg.Upstreams))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	fc := cache.NewFinalityChecker(cfg.FinalityDepth)
 	healthDone := pool.StartHealthChecks(ctx, cfg.HealthInterval, cfg.LagThreshold, cfg.ProbeTimeout, fc.SetHead)
-	log.Printf("Finality depth: %d blocks", cfg.FinalityDepth)
+	slog.Info("finality checker initialised", "depth_blocks", cfg.FinalityDepth)
 
 	store, err := buildCacheStore(ctx, cfg)
 	if err != nil {
-		log.Fatalf("Cache backend error: %v", err)
+		slog.Error("cache backend error", "err", err)
+		os.Exit(1)
 	}
 	defer func() {
 		if err := store.Close(); err != nil {
-			log.Printf("Cache close error: %v", err)
+			slog.Warn("cache close error", "err", err)
 		}
 	}()
 	rtr := router.New(pool)
@@ -50,17 +56,21 @@ func main() {
 	srv := httpapi.New(cfg.Port, h, pool)
 
 	go func() {
-		log.Printf("AegisRPC started on %s (mutableTTL=%s, healthInterval=%s, probeTimeout=%s)",
-			srv.Addr(), cfg.MutableTTL, cfg.HealthInterval, cfg.ProbeTimeout)
+		slog.Info("server started",
+			"addr", srv.Addr(),
+			"mutable_ttl", cfg.MutableTTL,
+			"health_interval", cfg.HealthInterval,
+			"probe_timeout", cfg.ProbeTimeout)
 		if err := srv.Start(); err != nil {
-			log.Fatalf("Server failed: %v", err)
+			slog.Error("server failed", "err", err)
+			os.Exit(1)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("Shutting down...")
+	slog.Info("shutting down")
 	if err := srv.Shutdown(15 * time.Second); err != nil {
-		log.Printf("Shutdown error: %v", err)
+		slog.Warn("server shutdown error", "err", err)
 	}
 	// Wait for the health-check goroutine to exit before letting deferred
 	// store.Close() run; otherwise an in-flight probe could outlive the
@@ -72,9 +82,36 @@ func main() {
 	select {
 	case <-healthDone:
 	case <-time.After(healthDeadline):
-		log.Printf("[warn] health-check goroutine did not exit within %s", healthDeadline)
+		slog.Warn("health-check goroutine did not exit within deadline",
+			"deadline", healthDeadline)
 	}
-	log.Println("Stopped.")
+	slog.Info("stopped")
+}
+
+// setupLogger installs the application-wide slog default handler. Called once
+// after Parse() so that LogLevel/LogFormat from config (validated against an
+// allowlist) shape every subsequent log line. Output goes to stderr so that
+// stdout stays free for any future structured RPC output.
+func setupLogger(cfg config.Config) {
+	var level slog.Level
+	switch cfg.LogLevel {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default: // "info"
+		level = slog.LevelInfo
+	}
+	opts := &slog.HandlerOptions{Level: level}
+	var handler slog.Handler
+	if cfg.LogFormat == "json" {
+		handler = slog.NewJSONHandler(os.Stderr, opts)
+	} else {
+		handler = slog.NewTextHandler(os.Stderr, opts)
+	}
+	slog.SetDefault(slog.New(handler))
 }
 
 // buildCacheStore wires the cache backend chosen in config. The default
@@ -89,10 +126,10 @@ func buildCacheStore(ctx context.Context, cfg config.Config) (cache.Store, error
 		}
 		// Log the redacted address from the parsed URL — never the raw
 		// AEGIS_REDIS_URL value, which may contain a password.
-		log.Printf("Cache backend: redis (%s)", store.Addr())
+		slog.Info("cache backend selected", "backend", "redis", "addr", store.Addr())
 		return store, nil
 	default:
-		log.Printf("Cache backend: memory (max %d entries)", cfg.MaxCacheEntries)
+		slog.Info("cache backend selected", "backend", "memory", "max_entries", cfg.MaxCacheEntries)
 		return cache.NewCache(ctx, 5*time.Minute, cfg.MaxCacheEntries), nil
 	}
 }
