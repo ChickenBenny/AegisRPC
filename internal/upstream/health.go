@@ -107,9 +107,18 @@ func checkNode(parent context.Context, node *Upstream, timeout time.Duration) {
 	case wasHealthy && !healthy:
 		slog.Warn("upstream degraded", "node", host, "reason", reason)
 	case !wasHealthy && healthy:
-		slog.Info("upstream recovered", "node", host, "block", blockHeight, "reason", reason)
+		// Recovery is its own signal — adding reason here would either be
+		// empty (normal recovery) or read confusingly (e.g.
+		// reason=rate_limited on a "recovered" line).
+		slog.Info("upstream recovered", "node", host, "block", blockHeight)
 	case healthy:
-		slog.Debug("upstream ok", "node", host, "block", blockHeight, "reason", reason)
+		// Steady-state OK. Include reason so a persistent "rate_limited"
+		// state is still discoverable when an operator drops to debug.
+		if reason == "" {
+			slog.Debug("upstream ok", "node", host, "block", blockHeight)
+		} else {
+			slog.Debug("upstream ok", "node", host, "block", blockHeight, "reason", reason)
+		}
 	default:
 		slog.Debug("upstream still degraded", "node", host, "reason", reason)
 	}

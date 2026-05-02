@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,13 +18,26 @@ import (
 )
 
 func main() {
+	// Configure the logger from env vars + CLI flags before config.Parse()
+	// runs so that any slog emissions from the parser itself (config-file
+	// load notifications, env-var validation warnings) already match the
+	// user's chosen format. Without this, the first few lines would always
+	// be in text format — fatal for AEGIS_LOG_FORMAT=json log pipelines
+	// that expect every line to be parseable JSON.
+	//
+	// YAML is intentionally not consulted here; partial-parsing the YAML
+	// file before flag.Parse has run is fragile, and operators driving
+	// log config from YAML alone is the rare case (env / flag are far
+	// more common for deployment-time logging settings).
+	setupLoggerFromEarly()
+
 	cfg, err := config.Parse()
 	if err != nil {
-		// Logger is not configured yet; use stderr directly with a stable prefix
-		// so config-failure errors look the same regardless of LogFormat.
 		slog.Error("config error", "err", err)
 		os.Exit(1)
 	}
+	// Re-apply with the fully resolved cfg so YAML overrides — and any
+	// normalisation Validate has performed — take effect.
 	setupLogger(cfg)
 
 	pool, err := upstream.NewPool(cfg.Upstreams)
@@ -88,30 +102,98 @@ func main() {
 	slog.Info("stopped")
 }
 
-// setupLogger installs the application-wide slog default handler. Called once
-// after Parse() so that LogLevel/LogFormat from config (validated against an
-// allowlist) shape every subsequent log line. Output goes to stderr so that
-// stdout stays free for any future structured RPC output.
+// setupLogger installs the application-wide slog default handler. Called twice:
+// once early via setupLoggerFromEnv() so config parsing emits in the right
+// format, then again after Parse() so YAML/flag overrides take effect. Output
+// goes to stderr so stdout stays free for any future structured RPC output.
+//
+// Inputs are normalized defensively (ToLower) so this function is safe to
+// call with raw user values — e.g. before config.Validate has had a chance
+// to reject typos. Unknown values fall through to text/info, mirroring the
+// stdlib slog defaults.
 func setupLogger(cfg config.Config) {
 	var level slog.Level
-	switch cfg.LogLevel {
+	switch strings.ToLower(strings.TrimSpace(cfg.LogLevel)) {
 	case "debug":
 		level = slog.LevelDebug
 	case "warn":
 		level = slog.LevelWarn
 	case "error":
 		level = slog.LevelError
-	default: // "info"
+	default: // "info" or anything unknown — Validate will reject typos later
 		level = slog.LevelInfo
 	}
 	opts := &slog.HandlerOptions{Level: level}
 	var handler slog.Handler
-	if cfg.LogFormat == "json" {
+	if strings.ToLower(strings.TrimSpace(cfg.LogFormat)) == "json" {
 		handler = slog.NewJSONHandler(os.Stderr, opts)
 	} else {
 		handler = slog.NewTextHandler(os.Stderr, opts)
 	}
 	slog.SetDefault(slog.New(handler))
+}
+
+// setupLoggerFromEarly configures the logger using AEGIS_LOG_LEVEL /
+// AEGIS_LOG_FORMAT env vars and the corresponding --log-level / --log-format
+// CLI flags, falling back to defaults when unset. Used as the first step of
+// main() so subsequent slog emissions during config.Parse() respect the
+// operator's chosen format/level. Any YAML override is reapplied via
+// setupLogger(cfg) after Parse() completes.
+//
+// CLI flags are read by directly walking os.Args via peekFlag, not by
+// calling flag.Parse() — config.Parse later does its own flag.Parse and
+// declaring flags twice on the global flag set would panic. The duplication
+// is bounded to two well-known flags whose names are an industry convention
+// (--log-level / --log-format), so this is acceptable.
+func setupLoggerFromEarly() {
+	cfg := config.Default()
+
+	// env layer — applied first so flag layer can override
+	if v := os.Getenv("AEGIS_LOG_LEVEL"); v != "" {
+		cfg.LogLevel = v
+	}
+	if v := os.Getenv("AEGIS_LOG_FORMAT"); v != "" {
+		cfg.LogFormat = v
+	}
+
+	// flag layer — overrides env when present, matching config.Parse precedence
+	if v := peekFlag("log-level"); v != "" {
+		cfg.LogLevel = v
+	}
+	if v := peekFlag("log-format"); v != "" {
+		cfg.LogFormat = v
+	}
+
+	setupLogger(cfg)
+}
+
+// peekFlag scans os.Args for a flag in any of the four standard forms:
+//
+//	--name value     -name value
+//	--name=value     -name=value
+//
+// and returns the value, or "" if the flag is absent. This is intentionally
+// a minimal implementation; it does not validate that the flag is one of the
+// program's declared flags (config.Parse handles full flag parsing later).
+// Only used for log-level / log-format pre-parsing so that early-startup
+// slog emissions match the operator's chosen format.
+func peekFlag(name string) string {
+	long, short := "--"+name, "-"+name
+	longEq, shortEq := long+"=", short+"="
+	args := os.Args[1:]
+	for i, a := range args {
+		switch {
+		case strings.HasPrefix(a, longEq):
+			return a[len(longEq):]
+		case strings.HasPrefix(a, shortEq):
+			return a[len(shortEq):]
+		case a == long || a == short:
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+		}
+	}
+	return ""
 }
 
 // buildCacheStore wires the cache backend chosen in config. The default

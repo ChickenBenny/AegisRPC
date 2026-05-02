@@ -142,6 +142,79 @@ func TestStartHealthChecks_MarksLaggingNode(t *testing.T) {
 	assert.False(t, pool.nodes[1].IsHealthy(), "node2 should be unhealthy (lagging 200 blocks)")
 }
 
+// ─── probeNode direct tests ────────────────────────────────────────────────
+//
+// probeNode is the pure-result probe carved out of checkNode in the slog /
+// transition-only refactor. checkNode now relies on its (healthy, blockHeight,
+// reason) contract for the state-machine logic, so each return shape gets a
+// dedicated test below — regressions surface here before they propagate into
+// transition-logging behaviour.
+
+func TestProbeNode_Healthy_ReturnsHeightAndEmptyReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"jsonrpc":"2.0","result":"0x3e8","id":1}`)) // block 1000
+	}))
+	defer server.Close()
+
+	node := newTestNode(t, server.URL)
+	healthy, height, reason := probeNode(context.Background(), node, 5*time.Second)
+
+	assert.True(t, healthy)
+	assert.Equal(t, uint64(1000), height)
+	assert.Empty(t, reason, "successful probe should leave reason blank")
+}
+
+func TestProbeNode_RateLimited_ReturnsRateLimitedReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	node := newTestNode(t, server.URL)
+	healthy, height, reason := probeNode(context.Background(), node, 5*time.Second)
+
+	assert.True(t, healthy, "429 should keep node healthy (reachable but busy)")
+	assert.Equal(t, uint64(0), height, "429 should not report a block height")
+	assert.Equal(t, "rate_limited", reason)
+}
+
+func TestProbeNode_HTTPError_ReturnsHTTPReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	node := newTestNode(t, server.URL)
+	healthy, height, reason := probeNode(context.Background(), node, 5*time.Second)
+
+	assert.False(t, healthy)
+	assert.Equal(t, uint64(0), height)
+	assert.Equal(t, "http_502", reason)
+}
+
+func TestProbeNode_RPCError_ReturnsParseReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32000,"message":"node syncing"},"id":1}`))
+	}))
+	defer server.Close()
+
+	node := newTestNode(t, server.URL)
+	healthy, height, reason := probeNode(context.Background(), node, 5*time.Second)
+
+	assert.False(t, healthy)
+	assert.Equal(t, uint64(0), height)
+	assert.Contains(t, reason, "rpc error", "reason should describe the upstream RPC error")
+}
+
+func TestProbeNode_Unreachable_ReturnsUnreachableReason(t *testing.T) {
+	node := newTestNode(t, "http://127.0.0.1:1") // closed port
+	healthy, height, reason := probeNode(context.Background(), node, 1*time.Second)
+
+	assert.False(t, healthy)
+	assert.Equal(t, uint64(0), height)
+	assert.Contains(t, reason, "unreachable", "reason should describe the connection failure")
+}
+
 // TestStartHealthChecks_DoneChannelClosesOnCancel asserts the contract that
 // the channel returned by StartHealthChecks is closed once the goroutine has
 // exited after ctx cancellation. main relies on this for ordered shutdown,
