@@ -20,6 +20,8 @@ func TestDefault(t *testing.T) {
 	assert.Equal(t, 15*time.Second, cfg.HealthInterval)
 	assert.Equal(t, 5*time.Second, cfg.ProbeTimeout)
 	assert.Equal(t, uint64(10), cfg.LagThreshold)
+	assert.Equal(t, "info", cfg.LogLevel)
+	assert.Equal(t, "text", cfg.LogFormat)
 }
 
 func TestApplyEnv(t *testing.T) {
@@ -158,6 +160,26 @@ func TestValidate_ProbeTimeoutGEHealthInterval(t *testing.T) {
 
 	cfg.ProbeTimeout = cfg.HealthInterval + time.Second // greater → also invalid
 	assert.ErrorContains(t, cfg.Validate(), "probe_timeout")
+}
+
+func TestValidate_LogLevel(t *testing.T) {
+	cfg := Default()
+	for _, level := range []string{"debug", "info", "warn", "error"} {
+		cfg.LogLevel = level
+		assert.NoError(t, cfg.Validate(), "level %q should be accepted", level)
+	}
+	cfg.LogLevel = "verbose"
+	assert.ErrorContains(t, cfg.Validate(), "log_level")
+}
+
+func TestValidate_LogFormat(t *testing.T) {
+	cfg := Default()
+	for _, format := range []string{"text", "json"} {
+		cfg.LogFormat = format
+		assert.NoError(t, cfg.Validate(), "format %q should be accepted", format)
+	}
+	cfg.LogFormat = "yaml"
+	assert.ErrorContains(t, cfg.Validate(), "log_format")
 }
 
 func writeTemp(t *testing.T, content string) string {
