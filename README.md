@@ -43,6 +43,8 @@ CLI flags  >  Environment variables  >  YAML config file  >  Built-in defaults
 | `AEGIS_HEALTH_INTERVAL` | `15s` | How often to poll each upstream for health |
 | `AEGIS_PROBE_TIMEOUT` | `5s` | HTTP timeout for each individual health probe request |
 | `AEGIS_LAG_THRESHOLD` | `10` | Max blocks a node may lag behind the best before being marked unhealthy |
+| `AEGIS_LOG_LEVEL` | `info` | Log threshold: `debug`, `info`, `warn`, or `error`. `debug` reveals every per-probe outcome; `info` only logs state transitions and notable events. |
+| `AEGIS_LOG_FORMAT` | `text` | Log encoding: `text` (human-readable `key=value`) or `json` (one JSON object per line, suited for ELK / Loki / Datadog). |
 
 Duration values accept Go duration strings: `5s`, `1m`, `500ms`, etc.
 
