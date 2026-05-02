@@ -32,7 +32,7 @@ func main() {
 	defer stop()
 
 	fc := cache.NewFinalityChecker(cfg.FinalityDepth)
-	pool.StartHealthChecks(ctx, cfg.HealthInterval, cfg.LagThreshold, cfg.ProbeTimeout, fc.SetHead)
+	healthDone := pool.StartHealthChecks(ctx, cfg.HealthInterval, cfg.LagThreshold, cfg.ProbeTimeout, fc.SetHead)
 	log.Printf("Finality depth: %d blocks", cfg.FinalityDepth)
 
 	store, err := buildCacheStore(ctx, cfg)
@@ -62,6 +62,10 @@ func main() {
 	if err := srv.Shutdown(15 * time.Second); err != nil {
 		log.Printf("Shutdown error: %v", err)
 	}
+	// Wait for the health-check goroutine to exit before letting deferred
+	// store.Close() run; otherwise an in-flight probe could outlive the
+	// resources it depends on.
+	<-healthDone
 	log.Println("Stopped.")
 }
 

@@ -20,8 +20,15 @@ var healthCheckPayload = []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","pa
 // Nodes lagging more than lagThreshold blocks behind the best node are marked unhealthy.
 // probeTimeout caps each individual health-check HTTP request.
 // The optional onHeadUpdate callbacks are invoked after each round with the best observed block height.
-func (p *Pool) StartHealthChecks(ctx context.Context, interval time.Duration, lagThreshold uint64, probeTimeout time.Duration, onHeadUpdate ...func(uint64)) {
+//
+// Returns a channel that is closed once the goroutine has exited (after ctx is
+// cancelled and any in-flight probes finish). Callers that need to coordinate
+// shutdown — typically main() after srv.Shutdown — should block on it before
+// tearing down shared resources like the cache backend.
+func (p *Pool) StartHealthChecks(ctx context.Context, interval time.Duration, lagThreshold uint64, probeTimeout time.Duration, onHeadUpdate ...func(uint64)) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -34,7 +41,7 @@ func (p *Pool) StartHealthChecks(ctx context.Context, interval time.Duration, la
 					wg.Add(1)
 					go func(n *Upstream) {
 						defer wg.Done()
-						checkNode(n, probeTimeout)
+						checkNode(ctx, n, probeTimeout)
 					}(node)
 				}
 				wg.Wait()
@@ -45,6 +52,7 @@ func (p *Pool) StartHealthChecks(ctx context.Context, interval time.Duration, la
 			}
 		}
 	}()
+	return done
 }
 
 func parseBlockNumber(hexStr string) (uint64, error) {
@@ -72,8 +80,12 @@ func wsToHTTP(u string) string {
 	return u
 }
 
-func checkNode(node *Upstream, timeout time.Duration) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+// checkNode performs one health probe against a single upstream. The parent
+// ctx (typically the lifecycle ctx owned by main) is wrapped with timeout so
+// shutdown signals cancel in-flight HTTP requests immediately rather than
+// waiting out the full probe timeout.
+func checkNode(parent context.Context, node *Upstream, timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wsToHTTP(node.URL.String()),

@@ -50,7 +50,7 @@ func TestCheckNode_StoresBlockHeight(t *testing.T) {
 	defer server.Close()
 
 	node := newTestNode(t, server.URL)
-	checkNode(node, 5*time.Second)
+	checkNode(context.Background(), node, 5*time.Second)
 
 	assert.True(t, node.IsHealthy())
 	assert.Equal(t, uint64(1000), node.BlockHeight())
@@ -63,7 +63,7 @@ func TestCheckNode_Healthy(t *testing.T) {
 	defer server.Close()
 
 	node := newTestNode(t, server.URL)
-	checkNode(node, 5*time.Second)
+	checkNode(context.Background(), node, 5*time.Second)
 
 	assert.True(t, node.IsHealthy())
 }
@@ -78,7 +78,7 @@ func TestCheckNode_OversizedResponse(t *testing.T) {
 	defer server.Close()
 
 	node := newTestNode(t, server.URL)
-	checkNode(node, 5*time.Second)
+	checkNode(context.Background(), node, 5*time.Second)
 
 	// LimitReader 截斷後 JSON 不完整，應該 parse 失敗 → unhealthy
 	assert.False(t, node.IsHealthy(), "oversized response should mark node unhealthy")
@@ -91,14 +91,14 @@ func TestCheckNode_RPCError(t *testing.T) {
 	defer server.Close()
 
 	node := newTestNode(t, server.URL)
-	checkNode(node, 5*time.Second)
+	checkNode(context.Background(), node, 5*time.Second)
 
 	assert.False(t, node.IsHealthy())
 }
 
 func TestCheckNode_Unreachable(t *testing.T) {
 	node := newTestNode(t, "http://127.0.0.1:1")
-	checkNode(node, 5*time.Second)
+	checkNode(context.Background(), node, 5*time.Second)
 
 	assert.False(t, node.IsHealthy())
 }
@@ -110,7 +110,7 @@ func TestCheckNode_InvalidJSON(t *testing.T) {
 	defer server.Close()
 
 	node := newTestNode(t, server.URL)
-	checkNode(node, 5*time.Second)
+	checkNode(context.Background(), node, 5*time.Second)
 
 	assert.False(t, node.IsHealthy())
 }
