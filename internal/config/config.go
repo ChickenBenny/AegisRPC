@@ -129,69 +129,80 @@ func LoadFile(path string, cfg *Config) error {
 // Invalid values emit a [config] warning and are ignored, so that a single
 // typo does not prevent the server from starting.
 func ApplyEnv(cfg *Config) {
-	if v := os.Getenv("AEGIS_PORT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Port = n
-		} else {
-			log.Printf("[config] AEGIS_PORT=%q is not a valid integer, ignoring", v)
-		}
+	envInt("AEGIS_PORT", func(v int) { cfg.Port = v })
+	envStringSlice("AEGIS_UPSTREAMS", ",", func(v []string) { cfg.Upstreams = v })
+	envDuration("AEGIS_MUTABLE_TTL", func(v time.Duration) { cfg.MutableTTL = v })
+	envInt("AEGIS_MAX_CACHE_ENTRIES", func(v int) { cfg.MaxCacheEntries = v })
+	envUint64("AEGIS_FINALITY_DEPTH", func(v uint64) { cfg.FinalityDepth = v })
+	envDuration("AEGIS_HEALTH_INTERVAL", func(v time.Duration) { cfg.HealthInterval = v })
+	envDuration("AEGIS_PROBE_TIMEOUT", func(v time.Duration) { cfg.ProbeTimeout = v })
+	envUint64("AEGIS_LAG_THRESHOLD", func(v uint64) { cfg.LagThreshold = v })
+	envString("AEGIS_CACHE_BACKEND", func(v string) { cfg.CacheBackend = v })
+	envString("AEGIS_REDIS_URL", func(v string) { cfg.RedisURL = v })
+}
+
+// envInt reads an environment variable as a base-10 integer.
+// If the value is empty the setter is not called; if it is present but malformed
+// a warning is logged and the setter is still skipped so the existing field
+// value (default or YAML-loaded) is preserved.
+func envInt(name string, set func(int)) {
+	v := os.Getenv(name)
+	if v == "" {
+		return
 	}
-	if v := os.Getenv("AEGIS_UPSTREAMS"); v != "" {
-		urls := splitTrimmed(v, ",")
-		if len(urls) > 0 {
-			cfg.Upstreams = urls
-		} else {
-			log.Printf("[config] AEGIS_UPSTREAMS=%q produced no valid URLs, ignoring", v)
-		}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		log.Printf("[config] %s=%q is not a valid integer, ignoring", name, v)
+		return
 	}
-	if v := os.Getenv("AEGIS_MUTABLE_TTL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.MutableTTL = d
-		} else {
-			log.Printf("[config] AEGIS_MUTABLE_TTL=%q is not a valid duration, ignoring", v)
-		}
+	set(n)
+}
+
+func envUint64(name string, set func(uint64)) {
+	v := os.Getenv(name)
+	if v == "" {
+		return
 	}
-	if v := os.Getenv("AEGIS_MAX_CACHE_ENTRIES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.MaxCacheEntries = n
-		} else {
-			log.Printf("[config] AEGIS_MAX_CACHE_ENTRIES=%q is not a valid integer, ignoring", v)
-		}
+	n, err := strconv.ParseUint(v, 10, 64)
+	if err != nil {
+		log.Printf("[config] %s=%q is not a valid uint64, ignoring", name, v)
+		return
 	}
-	if v := os.Getenv("AEGIS_FINALITY_DEPTH"); v != "" {
-		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
-			cfg.FinalityDepth = n
-		} else {
-			log.Printf("[config] AEGIS_FINALITY_DEPTH=%q is not a valid uint64, ignoring", v)
-		}
+	set(n)
+}
+
+func envDuration(name string, set func(time.Duration)) {
+	v := os.Getenv(name)
+	if v == "" {
+		return
 	}
-	if v := os.Getenv("AEGIS_HEALTH_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.HealthInterval = d
-		} else {
-			log.Printf("[config] AEGIS_HEALTH_INTERVAL=%q is not a valid duration, ignoring", v)
-		}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		log.Printf("[config] %s=%q is not a valid duration, ignoring", name, v)
+		return
 	}
-	if v := os.Getenv("AEGIS_PROBE_TIMEOUT"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.ProbeTimeout = d
-		} else {
-			log.Printf("[config] AEGIS_PROBE_TIMEOUT=%q is not a valid duration, ignoring", v)
-		}
+	set(d)
+}
+
+func envString(name string, set func(string)) {
+	if v := os.Getenv(name); v != "" {
+		set(v)
 	}
-	if v := os.Getenv("AEGIS_LAG_THRESHOLD"); v != "" {
-		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
-			cfg.LagThreshold = n
-		} else {
-			log.Printf("[config] AEGIS_LAG_THRESHOLD=%q is not a valid uint64, ignoring", v)
-		}
+}
+
+// envStringSlice splits a separator-delimited env var. An entirely-empty result
+// (e.g. AEGIS_UPSTREAMS=",,,") is treated as malformed and ignored with a warning.
+func envStringSlice(name, sep string, set func([]string)) {
+	v := os.Getenv(name)
+	if v == "" {
+		return
 	}
-	if v := os.Getenv("AEGIS_CACHE_BACKEND"); v != "" {
-		cfg.CacheBackend = v
+	parts := splitTrimmed(v, sep)
+	if len(parts) == 0 {
+		log.Printf("[config] %s=%q produced no valid entries, ignoring", name, v)
+		return
 	}
-	if v := os.Getenv("AEGIS_REDIS_URL"); v != "" {
-		cfg.RedisURL = v
-	}
+	set(parts)
 }
 
 // Validate checks that the Config is internally consistent and safe to use.

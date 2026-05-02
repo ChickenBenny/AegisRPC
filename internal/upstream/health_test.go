@@ -50,7 +50,7 @@ func TestCheckNode_StoresBlockHeight(t *testing.T) {
 	defer server.Close()
 
 	node := newTestNode(t, server.URL)
-	checkNode(node, 5*time.Second)
+	checkNode(context.Background(), node, 5*time.Second)
 
 	assert.True(t, node.IsHealthy())
 	assert.Equal(t, uint64(1000), node.BlockHeight())
@@ -63,7 +63,7 @@ func TestCheckNode_Healthy(t *testing.T) {
 	defer server.Close()
 
 	node := newTestNode(t, server.URL)
-	checkNode(node, 5*time.Second)
+	checkNode(context.Background(), node, 5*time.Second)
 
 	assert.True(t, node.IsHealthy())
 }
@@ -78,7 +78,7 @@ func TestCheckNode_OversizedResponse(t *testing.T) {
 	defer server.Close()
 
 	node := newTestNode(t, server.URL)
-	checkNode(node, 5*time.Second)
+	checkNode(context.Background(), node, 5*time.Second)
 
 	// LimitReader 截斷後 JSON 不完整，應該 parse 失敗 → unhealthy
 	assert.False(t, node.IsHealthy(), "oversized response should mark node unhealthy")
@@ -91,14 +91,14 @@ func TestCheckNode_RPCError(t *testing.T) {
 	defer server.Close()
 
 	node := newTestNode(t, server.URL)
-	checkNode(node, 5*time.Second)
+	checkNode(context.Background(), node, 5*time.Second)
 
 	assert.False(t, node.IsHealthy())
 }
 
 func TestCheckNode_Unreachable(t *testing.T) {
 	node := newTestNode(t, "http://127.0.0.1:1")
-	checkNode(node, 5*time.Second)
+	checkNode(context.Background(), node, 5*time.Second)
 
 	assert.False(t, node.IsHealthy())
 }
@@ -110,7 +110,7 @@ func TestCheckNode_InvalidJSON(t *testing.T) {
 	defer server.Close()
 
 	node := newTestNode(t, server.URL)
-	checkNode(node, 5*time.Second)
+	checkNode(context.Background(), node, 5*time.Second)
 
 	assert.False(t, node.IsHealthy())
 }
@@ -140,6 +140,32 @@ func TestStartHealthChecks_MarksLaggingNode(t *testing.T) {
 
 	assert.True(t, pool.nodes[0].IsHealthy(), "node1 should be healthy")
 	assert.False(t, pool.nodes[1].IsHealthy(), "node2 should be unhealthy (lagging 200 blocks)")
+}
+
+// TestStartHealthChecks_DoneChannelClosesOnCancel asserts the contract that
+// the channel returned by StartHealthChecks is closed once the goroutine has
+// exited after ctx cancellation. main relies on this for ordered shutdown,
+// so regressing it would silently reintroduce the race fixed by this PR.
+func TestStartHealthChecks_DoneChannelClosesOnCancel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`))
+	}))
+	defer server.Close()
+
+	pool, err := NewPool([]string{server.URL})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := pool.StartHealthChecks(ctx, 50*time.Millisecond, 10, 100*time.Millisecond)
+
+	cancel()
+
+	select {
+	case <-done:
+		// expected: goroutine observed ctx cancellation and exited
+	case <-time.After(2 * time.Second):
+		t.Fatal("done channel did not close within 2s of ctx cancel")
+	}
 }
 
 func TestStartHealthChecks_UpdatesHealth(t *testing.T) {
