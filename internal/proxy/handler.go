@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"time"
@@ -171,7 +171,7 @@ func (h *Handler) proxyDirect(w http.ResponseWriter, r *http.Request, body []byt
 		buf := &bufResponseWriter{header: make(http.Header), status: http.StatusOK}
 		proxy.ServeHTTP(buf, outReq)
 		if buf.status < 200 || buf.status >= 300 {
-			log.Printf("[http] %s returned %d, trying next", node.URL.Host, buf.status)
+			slog.Warn("upstream returned bad status, trying next", "node", node.URL.Host, "status", buf.status)
 			continue
 		}
 
@@ -223,7 +223,7 @@ func (h *Handler) fetchFromUpstream(r *http.Request, body []byte, method string)
 			return nil, &rateLimitedError{retryAfter: buf.header.Get("Retry-After")}
 		}
 		if buf.status < 200 || buf.status >= 300 {
-			log.Printf("[http] %s returned %d, trying next", node.URL.Host, buf.status)
+			slog.Warn("upstream returned bad status, trying next", "node", node.URL.Host, "status", buf.status)
 			continue
 		}
 		return buf.body.Bytes(), nil

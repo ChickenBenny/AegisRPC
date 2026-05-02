@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -85,59 +85,94 @@ func wsToHTTP(u string) string {
 // ctx) and is wrapped with timeout so that cancelling the parent — typically
 // at shutdown — aborts in-flight HTTP requests immediately rather than waiting
 // out the full probe timeout.
+//
+// Logging is transition-only: state-change events log at Info (recovery) or
+// Warn (degradation); steady-state probes (healthy still healthy, unhealthy
+// still unhealthy) log at Debug. This keeps INFO-level operator logs free of
+// the per-tick × per-node noise that the previous "[health] X OK" line
+// produced — every-15-seconds × N nodes regardless of whether anything had
+// actually changed.
 func checkNode(parent context.Context, node *Upstream, timeout time.Duration) {
+	wasHealthy := node.IsHealthy()
+
+	healthy, blockHeight, reason := probeNode(parent, node, timeout)
+
+	node.SetHealthy(healthy)
+	if blockHeight > 0 {
+		node.SetBlockHeight(blockHeight)
+	}
+
+	host := node.URL.Host
+	switch {
+	case wasHealthy && !healthy:
+		slog.Warn("upstream degraded", "node", host, "reason", reason)
+	case !wasHealthy && healthy:
+		// Recovery is its own signal — adding reason here would either be
+		// empty (normal recovery) or read confusingly (e.g.
+		// reason=rate_limited on a "recovered" line).
+		slog.Info("upstream recovered", "node", host, "block", blockHeight)
+	case healthy:
+		// Steady-state OK. Include reason so a persistent "rate_limited"
+		// state is still discoverable when an operator drops to debug.
+		if reason == "" {
+			slog.Debug("upstream ok", "node", host, "block", blockHeight)
+		} else {
+			slog.Debug("upstream ok", "node", host, "block", blockHeight, "reason", reason)
+		}
+	default:
+		slog.Debug("upstream still degraded", "node", host, "reason", reason)
+	}
+}
+
+// probeNode performs the actual HTTP probe and returns the resulting node
+// state. Splitting this out keeps checkNode focused on the transition-logging
+// concern; the two have orthogonal responsibilities.
+//
+// Return values:
+//   - healthy: whether the probe should mark the node available
+//   - blockHeight: parsed block number, or 0 when no fresh height was observed
+//     (errors, or rate-limit responses that prove only reachability)
+//   - reason: short human-readable cause. "" for a clean OK, "rate_limited"
+//     for 429, otherwise an error description used in transition log lines
+func probeNode(parent context.Context, node *Upstream, timeout time.Duration) (healthy bool, blockHeight uint64, reason string) {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, wsToHTTP(node.URL.String()),
 		bytes.NewReader(healthCheckPayload))
 	if err != nil {
-		log.Printf("[health] %s failed to build request: %v", node.URL.Host, err)
-		node.SetHealthy(false)
-		return
+		return false, 0, fmt.Sprintf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Host = node.URL.Host
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Printf("[health] %s unreachable: %v", node.URL.Host, err)
-		node.SetHealthy(false)
-		return
+		return false, 0, fmt.Sprintf("unreachable: %v", err)
 	}
 	defer resp.Body.Close()
 
-	// 429 means the health-check itself was rate-limited; the node is reachable
-	// but busy. Mark it healthy so callers can still try this round.
+	// 429 means the probe itself was rate-limited; the node is reachable
+	// but busy. Mark it healthy so callers can still try this round, but
+	// do not update block height (we did not get one).
 	if resp.StatusCode == http.StatusTooManyRequests {
-		log.Printf("[health] %s rate-limited (429), marking healthy", node.URL.Host)
-		node.SetHealthy(true)
-		return
+		return true, 0, "rate_limited"
 	}
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[health] %s HTTP %d", node.URL.Host, resp.StatusCode)
-		node.SetHealthy(false)
-		return
+		return false, 0, fmt.Sprintf("http_%d", resp.StatusCode)
 	}
 
 	const maxResponseSize = 1 * 1024 * 1024 // 1 MB
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
-		log.Printf("[health] %s failed to read response: %v", node.URL.Host, err)
-		node.SetHealthy(false)
-		return
+		return false, 0, fmt.Sprintf("read body: %v", err)
 	}
 
-	blockHeight, err := validateRPCResponse(body)
+	height, err := validateRPCResponse(body)
 	if err != nil {
-		log.Printf("[health] %s RPC error: %v", node.URL.Host, err)
-		node.SetHealthy(false)
-		return
+		return false, 0, fmt.Sprintf("rpc error: %v", err)
 	}
-
-	node.SetHealthy(true)
-	node.SetBlockHeight(blockHeight)
-	log.Printf("[health] %s OK", node.URL.Host)
+	return true, height, ""
 }
 
 func validateRPCResponse(body []byte) (uint64, error) {

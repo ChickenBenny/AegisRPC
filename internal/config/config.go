@@ -3,7 +3,7 @@ package config
 import (
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -28,6 +28,14 @@ type Config struct {
 	// RedisURL is the connection string used when CacheBackend="redis",
 	// e.g. redis://localhost:6379/0 or redis://:password@host:6379/0.
 	RedisURL string
+	// LogLevel filters slog output. One of "debug", "info", "warn", "error".
+	// Lower-level events are dropped; e.g. "info" hides debug-level probe
+	// successes but keeps state transitions and errors.
+	LogLevel string
+	// LogFormat selects the slog handler: "text" for human-readable
+	// key=value output or "json" for structured logs suitable for
+	// shipping to ELK / Loki / Datadog.
+	LogFormat string
 }
 
 // Default returns a Config populated with production-ready defaults.
@@ -43,6 +51,8 @@ func Default() Config {
 		LagThreshold:    10,
 		CacheBackend:    "memory",
 		RedisURL:        "",
+		LogLevel:        "info",
+		LogFormat:       "text",
 	}
 }
 
@@ -63,6 +73,8 @@ type yamlConfig struct {
 	LagThreshold    *uint64  `yaml:"lag_threshold"`
 	CacheBackend    string   `yaml:"cache_backend"`
 	RedisURL        string   `yaml:"redis_url"`
+	LogLevel        string   `yaml:"log_level"`
+	LogFormat       string   `yaml:"log_format"`
 }
 
 // LoadFile reads a YAML config file and merges non-zero values into cfg.
@@ -121,6 +133,12 @@ func LoadFile(path string, cfg *Config) error {
 	if yc.RedisURL != "" {
 		cfg.RedisURL = yc.RedisURL
 	}
+	if yc.LogLevel != "" {
+		cfg.LogLevel = yc.LogLevel
+	}
+	if yc.LogFormat != "" {
+		cfg.LogFormat = yc.LogFormat
+	}
 
 	return nil
 }
@@ -139,6 +157,8 @@ func ApplyEnv(cfg *Config) {
 	envUint64("AEGIS_LAG_THRESHOLD", func(v uint64) { cfg.LagThreshold = v })
 	envString("AEGIS_CACHE_BACKEND", func(v string) { cfg.CacheBackend = v })
 	envString("AEGIS_REDIS_URL", func(v string) { cfg.RedisURL = v })
+	envString("AEGIS_LOG_LEVEL", func(v string) { cfg.LogLevel = v })
+	envString("AEGIS_LOG_FORMAT", func(v string) { cfg.LogFormat = v })
 }
 
 // envInt reads an environment variable as a base-10 integer.
@@ -152,7 +172,7 @@ func envInt(name string, set func(int)) {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		log.Printf("[config] %s=%q is not a valid integer, ignoring", name, v)
+		slog.Warn("ignoring invalid config env var", "key", name, "value", v, "expected", "integer")
 		return
 	}
 	set(n)
@@ -165,7 +185,7 @@ func envUint64(name string, set func(uint64)) {
 	}
 	n, err := strconv.ParseUint(v, 10, 64)
 	if err != nil {
-		log.Printf("[config] %s=%q is not a valid uint64, ignoring", name, v)
+		slog.Warn("ignoring invalid config env var", "key", name, "value", v, "expected", "uint64")
 		return
 	}
 	set(n)
@@ -178,7 +198,7 @@ func envDuration(name string, set func(time.Duration)) {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		log.Printf("[config] %s=%q is not a valid duration, ignoring", name, v)
+		slog.Warn("ignoring invalid config env var", "key", name, "value", v, "expected", "duration")
 		return
 	}
 	set(d)
@@ -199,7 +219,7 @@ func envStringSlice(name, sep string, set func([]string)) {
 	}
 	parts := splitTrimmed(v, sep)
 	if len(parts) == 0 {
-		log.Printf("[config] %s=%q produced no valid entries, ignoring", name, v)
+		slog.Warn("ignoring invalid config env var", "key", name, "value", v, "expected", "non-empty list")
 		return
 	}
 	set(parts)
@@ -236,6 +256,16 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("cache_backend %q is not valid (allowed: memory, redis)", c.CacheBackend)
 	}
+	switch strings.ToLower(strings.TrimSpace(c.LogLevel)) {
+	case "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("log_level %q is not valid (allowed: debug, info, warn, error)", c.LogLevel)
+	}
+	switch strings.ToLower(strings.TrimSpace(c.LogFormat)) {
+	case "text", "json":
+	default:
+		return fmt.Errorf("log_format %q is not valid (allowed: text, json)", c.LogFormat)
+	}
 	return nil
 }
 
@@ -257,6 +287,8 @@ func Parse() (Config, error) {
 	lagThresh := flag.Uint64("lag-threshold", 10, "Max blocks a node may lag before marked unhealthy (env AEGIS_LAG_THRESHOLD)")
 	cacheBackend := flag.String("cache-backend", "memory", "Cache backend: memory or redis (env AEGIS_CACHE_BACKEND)")
 	redisURL := flag.String("redis-url", "", "Redis connection URL when cache-backend=redis (env AEGIS_REDIS_URL)")
+	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error (env AEGIS_LOG_LEVEL)")
+	logFormat := flag.String("log-format", "text", "Log format: text or json (env AEGIS_LOG_FORMAT)")
 	flag.Parse()
 
 	// -- layer 1: defaults --------------------------------------------------
@@ -271,7 +303,7 @@ func Parse() (Config, error) {
 		if err := LoadFile(cfgPath, &cfg); err != nil {
 			return cfg, fmt.Errorf("config file: %w", err)
 		}
-		log.Printf("Loaded config from %s", cfgPath)
+		slog.Info("loaded config file", "path", cfgPath)
 	}
 
 	// -- layer 3: ENV -------------------------------------------------------
@@ -302,12 +334,18 @@ func Parse() (Config, error) {
 			cfg.CacheBackend = *cacheBackend
 		case "redis-url":
 			cfg.RedisURL = *redisURL
+		case "log-level":
+			cfg.LogLevel = *logLevel
+		case "log-format":
+			cfg.LogFormat = *logFormat
 		}
 	})
 
-	// Normalise the cache backend value once so downstream callers can rely
-	// on the canonical lowercase form when matching.
+	// Normalise enum-like values once so downstream callers can rely on
+	// the canonical lowercase form when matching.
 	cfg.CacheBackend = strings.ToLower(strings.TrimSpace(cfg.CacheBackend))
+	cfg.LogLevel = strings.ToLower(strings.TrimSpace(cfg.LogLevel))
+	cfg.LogFormat = strings.ToLower(strings.TrimSpace(cfg.LogFormat))
 
 	if err := cfg.Validate(); err != nil {
 		return cfg, fmt.Errorf("invalid configuration: %w", err)
