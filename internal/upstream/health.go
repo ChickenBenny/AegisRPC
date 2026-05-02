@@ -81,9 +81,10 @@ func wsToHTTP(u string) string {
 }
 
 // checkNode performs one health probe against a single upstream. The parent
-// ctx (typically the lifecycle ctx owned by main) is wrapped with timeout so
-// shutdown signals cancel in-flight HTTP requests immediately rather than
-// waiting out the full probe timeout.
+// ctx is provided by the caller (StartHealthChecks passes the pool's lifecycle
+// ctx) and is wrapped with timeout so that cancelling the parent — typically
+// at shutdown — aborts in-flight HTTP requests immediately rather than waiting
+// out the full probe timeout.
 func checkNode(parent context.Context, node *Upstream, timeout time.Duration) {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()

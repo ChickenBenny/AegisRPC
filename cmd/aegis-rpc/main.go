@@ -64,8 +64,16 @@ func main() {
 	}
 	// Wait for the health-check goroutine to exit before letting deferred
 	// store.Close() run; otherwise an in-flight probe could outlive the
-	// resources it depends on.
-	<-healthDone
+	// resources it depends on. The deadline is a safety net for the rare
+	// case where ctx cancellation does not propagate promptly through the
+	// HTTP stack (e.g. DNS resolution or TLS handshake on some platforms);
+	// in steady state the channel is already closed when we get here.
+	healthDeadline := cfg.ProbeTimeout + time.Second
+	select {
+	case <-healthDone:
+	case <-time.After(healthDeadline):
+		log.Printf("[warn] health-check goroutine did not exit within %s", healthDeadline)
+	}
 	log.Println("Stopped.")
 }
 

@@ -142,6 +142,32 @@ func TestStartHealthChecks_MarksLaggingNode(t *testing.T) {
 	assert.False(t, pool.nodes[1].IsHealthy(), "node2 should be unhealthy (lagging 200 blocks)")
 }
 
+// TestStartHealthChecks_DoneChannelClosesOnCancel asserts the contract that
+// the channel returned by StartHealthChecks is closed once the goroutine has
+// exited after ctx cancellation. main relies on this for ordered shutdown,
+// so regressing it would silently reintroduce the race fixed by this PR.
+func TestStartHealthChecks_DoneChannelClosesOnCancel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`))
+	}))
+	defer server.Close()
+
+	pool, err := NewPool([]string{server.URL})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := pool.StartHealthChecks(ctx, 50*time.Millisecond, 10, 100*time.Millisecond)
+
+	cancel()
+
+	select {
+	case <-done:
+		// expected: goroutine observed ctx cancellation and exited
+	case <-time.After(2 * time.Second):
+		t.Fatal("done channel did not close within 2s of ctx cancel")
+	}
+}
+
 func TestStartHealthChecks_UpdatesHealth(t *testing.T) {
 	var healthy atomic.Bool
 	healthy.Store(true)
