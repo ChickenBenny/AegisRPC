@@ -3,7 +3,7 @@ package config
 import (
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -172,7 +172,7 @@ func envInt(name string, set func(int)) {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		log.Printf("[config] %s=%q is not a valid integer, ignoring", name, v)
+		slog.Warn("ignoring invalid config env var", "key", name, "value", v, "expected", "integer")
 		return
 	}
 	set(n)
@@ -185,7 +185,7 @@ func envUint64(name string, set func(uint64)) {
 	}
 	n, err := strconv.ParseUint(v, 10, 64)
 	if err != nil {
-		log.Printf("[config] %s=%q is not a valid uint64, ignoring", name, v)
+		slog.Warn("ignoring invalid config env var", "key", name, "value", v, "expected", "uint64")
 		return
 	}
 	set(n)
@@ -198,7 +198,7 @@ func envDuration(name string, set func(time.Duration)) {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		log.Printf("[config] %s=%q is not a valid duration, ignoring", name, v)
+		slog.Warn("ignoring invalid config env var", "key", name, "value", v, "expected", "duration")
 		return
 	}
 	set(d)
@@ -219,7 +219,7 @@ func envStringSlice(name, sep string, set func([]string)) {
 	}
 	parts := splitTrimmed(v, sep)
 	if len(parts) == 0 {
-		log.Printf("[config] %s=%q produced no valid entries, ignoring", name, v)
+		slog.Warn("ignoring invalid config env var", "key", name, "value", v, "expected", "non-empty list")
 		return
 	}
 	set(parts)
@@ -303,7 +303,7 @@ func Parse() (Config, error) {
 		if err := LoadFile(cfgPath, &cfg); err != nil {
 			return cfg, fmt.Errorf("config file: %w", err)
 		}
-		log.Printf("Loaded config from %s", cfgPath)
+		slog.Info("loaded config file", "path", cfgPath)
 	}
 
 	// -- layer 3: ENV -------------------------------------------------------

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -125,7 +125,7 @@ func (r *RedisStore) Close() error {
 // that a Redis outage does not flood logs at the proxy's request rate.
 func (r *RedisStore) markDegraded(op string, err error) {
 	if r.degraded.CompareAndSwap(0, 1) {
-		log.Printf("[redis] %s failed, switching to no-cache mode: %v", op, err)
+		slog.Warn("redis op failed, switching to no-cache mode", "op", op, "err", err)
 	}
 }
 
@@ -133,7 +133,7 @@ func (r *RedisStore) markDegraded(op string, err error) {
 // per recovery; no-ops on the steady-state happy path.
 func (r *RedisStore) markHealthy() {
 	if r.degraded.CompareAndSwap(1, 0) {
-		log.Printf("[redis] backend recovered")
+		slog.Info("redis backend recovered")
 	}
 }
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -91,7 +91,7 @@ func ServeWS(pool *upstream.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			log.Printf("[ws] upgrade: %v", err)
+			slog.Error("websocket upgrade failed", "err", err)
 			return
 		}
 		defer conn.Close()
@@ -127,14 +127,14 @@ func (s *wsSession) run(ctx context.Context) {
 	for {
 		up, err := s.connectUpstream()
 		if err != nil {
-			log.Printf("[ws] no upstream available: %v", err)
+			slog.Warn("no upstream available for ws session", "err", err)
 			_ = s.writeToClient(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "no upstream"))
 			return
 		}
 
 		if err := s.replaySubscriptions(up); err != nil {
-			log.Printf("[ws] replay failed: %v", err)
+			slog.Warn("subscription replay failed", "err", err)
 			up.Close()
 			continue
 		}
@@ -145,7 +145,7 @@ func (s *wsSession) run(ctx context.Context) {
 		if clientLeft {
 			return // client closed — end the session
 		}
-		log.Printf("[ws] upstream dropped, reconnecting")
+		slog.Info("ws upstream dropped, reconnecting")
 	}
 }
 
@@ -163,7 +163,7 @@ func (s *wsSession) connectUpstream() (*websocket.Conn, error) {
 		header := http.Header{"Origin": {"http://localhost"}}
 		conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
 		if err != nil {
-			log.Printf("[ws] dial %s failed: %v, trying next", wsURL, err)
+			slog.Warn("ws upstream dial failed, trying next", "url", wsURL, "err", err)
 			continue
 		}
 		return conn, nil
@@ -335,7 +335,7 @@ func (s *wsSession) forwardToUpstream(msg []byte, mt int, up *websocket.Conn) er
 			s.mu.Lock()
 			if len(s.pending) >= maxPendingSubscribes {
 				s.mu.Unlock()
-				log.Printf("[ws] pending subscribe cap (%d) reached, rejecting", maxPendingSubscribes)
+				slog.Warn("ws pending subscribe cap reached, rejecting", "cap", maxPendingSubscribes)
 				return s.writeToClient(mt, buildErrorResponse(req.ID, "too many pending subscriptions"))
 			}
 			s.pending[string(req.ID)] = req.Params
