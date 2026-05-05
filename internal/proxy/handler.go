@@ -45,10 +45,6 @@ func NewHandler(rtr *router.Router, c cache.Store, mutableTTL time.Duration, fc 
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// --- Observability setup ---
-	// `method` and `status` are updated throughout this function.
-	// The deferred closure reads their final values when the function returns,
-	// so we only need one recording point no matter how many return paths exist.
 	method := "unknown"
 	status := "ok"
 	start := time.Now()
@@ -57,7 +53,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		metrics.RequestDuration.WithLabelValues(method).Observe(time.Since(start).Seconds())
 	}()
 
-	// Read body so we can inspect the method and use it multiple times.
 	r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -72,11 +67,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON-RPC request", http.StatusBadRequest)
 		return
 	}
-	method = req.Method // now we know the real method name
+	method = req.Method
 
 	layer := h.finality.Classify(req.Method, req.Params)
 
-	// Uncacheable: bypass cache entirely.
 	if layer == cache.LayerUncacheable {
 		status = "uncacheable"
 		if err := h.proxyDirect(w, r, body, req.Method); err != nil {
@@ -87,7 +81,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	key := cache.CacheKey(req.Method, req.Params)
 
-	// Negative cache hit: upstream was recently unhealthy, fail fast.
 	if _, ok := h.cache.Get("neg::" + key); ok {
 		metrics.CacheRequests.WithLabelValues("neg_hit").Inc()
 		status = "neg_hit"
@@ -95,7 +88,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cache hit: serve immediately.
 	if cached, ok := h.cache.Get(key); ok {
 		metrics.CacheRequests.WithLabelValues("hit").Inc()
 		status = "cache_hit"
@@ -104,10 +96,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cache miss: we will call the upstream via singleflight.
 	metrics.CacheRequests.WithLabelValues("miss").Inc()
-
-	// Use singleflight to ensure only one upstream call per key.
 	v, err, _ := h.sf.Do(key, func() (any, error) {
 		resp, err := h.fetchFromUpstream(r, body, req.Method)
 		if err != nil {
@@ -117,8 +106,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			return nil, err
 		}
-		// Store result in cache with appropriate TTL.
-		ttl := time.Duration(0) // Immutable: never expires
+		ttl := time.Duration(0)
 		if layer == cache.LayerMutable {
 			ttl = h.mutableTTL
 		}
@@ -175,7 +163,6 @@ func (h *Handler) proxyDirect(w http.ResponseWriter, r *http.Request, body []byt
 			continue
 		}
 
-		// Successful response — flush buffer to the real ResponseWriter.
 		for k, vs := range buf.header {
 			for _, v := range vs {
 				w.Header().Add(k, v)
@@ -193,9 +180,8 @@ func (h *Handler) proxyDirect(w http.ResponseWriter, r *http.Request, body []byt
 // response body. It tries every capable healthy node before giving up, so
 // a node that is marked healthy but fails the live request does not abort the call.
 func (h *Handler) fetchFromUpstream(r *http.Request, body []byte, method string) ([]byte, error) {
-	// Clone once with a detached context so a single caller cancelling their
-	// request does not abort the shared singleflight call and fail all
-	// coalesced callers.
+	// Clone with a detached context so one caller cancelling does not abort
+	// the shared singleflight call and fail all coalesced callers.
 	baseReq := r.Clone(context.WithoutCancel(r.Context()))
 
 	n := len(h.router.Nodes())

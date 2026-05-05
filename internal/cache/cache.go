@@ -105,7 +105,6 @@ func (c *Cache) Set(key string, value []byte, ttl time.Duration) {
 	defer c.mu.Unlock()
 
 	if el, ok := c.items[key]; ok {
-		// Update existing entry and mark it as recently used.
 		e := el.Value.(*entry)
 		e.value = value
 		e.expiry = expiry
@@ -113,7 +112,6 @@ func (c *Cache) Set(key string, value []byte, ttl time.Duration) {
 		return
 	}
 
-	// Evict the least-recently-used entry when at capacity.
 	if c.maxEntries > 0 && c.lru.Len() >= c.maxEntries {
 		c.evictLRU()
 	}
@@ -136,9 +134,8 @@ func (c *Cache) Size() int {
 	return c.lru.Len()
 }
 
-// Close satisfies the Store interface. The in-memory cache holds no
-// external resources — its cleanup goroutine is owned by the context
-// passed to NewCache and stops when that context is cancelled.
+// Close satisfies the Store interface; the cleanup goroutine stops when the
+// context passed to NewCache is cancelled.
 func (c *Cache) Close() error { return nil }
 
 // evictLRU removes the least-recently-used entry. Must be called with mu held.

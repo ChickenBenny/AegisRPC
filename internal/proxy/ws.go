@@ -105,8 +105,6 @@ func ServeWS(pool *upstream.Pool) http.HandlerFunc {
 // A single goroutine owns s.client reads for the entire session lifetime, ensuring
 // gorilla/websocket's "one concurrent reader" contract is never violated across reconnects.
 func (s *wsSession) run(ctx context.Context) {
-	// fromClient carries frames from the client to the current upstream.
-	// clientGone is closed when the client disconnects.
 	fromClient := make(chan clientFrame, 8)
 	clientGone := make(chan struct{})
 	go func() {
@@ -143,7 +141,7 @@ func (s *wsSession) run(ctx context.Context) {
 		up.Close()
 
 		if clientLeft {
-			return // client closed — end the session
+			return
 		}
 		slog.Info("ws upstream dropped, reconnecting")
 	}
@@ -189,11 +187,8 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 		return nil
 	}
 
-	// pendingReplay maps each replay request ID to its subscription so responses
-	// can be matched out-of-order.
 	pendingReplay := make(map[string]*subscription, len(subs))
 
-	// Phase 1: send all subscribe requests at once.
 	for _, sub := range subs {
 		replayID := "replay:" + sub.clientID
 		req, err := json.Marshal(map[string]any{
@@ -211,7 +206,7 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 		pendingReplay[replayID] = sub
 	}
 
-	// Phase 2: collect responses. Apply a deadline so we never hang indefinitely.
+	// Collect responses.
 	up.SetReadDeadline(time.Now().Add(30 * time.Second))
 	defer up.SetReadDeadline(time.Time{})
 
@@ -227,18 +222,16 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 			Err    json.RawMessage `json:"error"`
 		}
 		if err := json.Unmarshal(msg, &resp); err != nil {
-			continue // unparseable frame; skip
+			continue
 		}
 
 		// Match using the string ID we sent ("replay:<clientID>").
 		var idStr string
 		if json.Unmarshal(resp.ID, &idStr) != nil {
-			continue // numeric or null ID — not a replay response; skip
+			continue
 		}
 		sub, ok := pendingReplay[idStr]
 		if !ok {
-			// Early eth_subscription notification or unrelated response — skip.
-			// The bidirectional pump will forward such frames once it starts.
 			continue
 		}
 
@@ -250,7 +243,7 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 		}
 
 		s.mu.Lock()
-		delete(s.upToClient, sub.upstreamID) // remove stale mapping
+		delete(s.upToClient, sub.upstreamID)
 		sub.upstreamID = resp.Result
 		s.upToClient[resp.Result] = sub.clientID
 		s.mu.Unlock()
@@ -277,7 +270,6 @@ func (s *wsSession) pump(ctx context.Context, up *websocket.Conn, fromClient <-c
 		return nil
 	})
 
-	// upstream → client
 	go func() {
 		defer close(upDone)
 		for {
@@ -294,7 +286,6 @@ func (s *wsSession) pump(ctx context.Context, up *websocket.Conn, fromClient <-c
 	pingTicker := time.NewTicker(s.pingPeriod)
 	defer pingTicker.Stop()
 
-	// client → upstream (via channel; no direct read of s.client here)
 	for {
 		select {
 		case <-upDone:
@@ -331,7 +322,6 @@ func (s *wsSession) forwardToUpstream(msg []byte, mt int, up *websocket.Conn) er
 	if err := json.Unmarshal(msg, &req); err == nil {
 		switch req.Method {
 		case "eth_subscribe":
-			// Track this request ID so we can record the subscription when the response arrives.
 			s.mu.Lock()
 			if len(s.pending) >= maxPendingSubscribes {
 				s.mu.Unlock()
@@ -341,7 +331,6 @@ func (s *wsSession) forwardToUpstream(msg []byte, mt int, up *websocket.Conn) er
 			s.pending[string(req.ID)] = req.Params
 			s.mu.Unlock()
 		case "eth_unsubscribe":
-			// Remap client sub ID → current upstream sub ID before forwarding.
 			msg = s.rewriteUnsubscribe(msg)
 		}
 	}
@@ -383,9 +372,6 @@ func (s *wsSession) forwardToClient(msg []byte, mt int) error {
 		return s.writeToClient(mt, msg)
 	}
 
-	// Subscription notification: remap upstreamID → clientID when they differ (post-failover).
-	// We unmarshal → edit params.subscription → re-marshal to avoid unsafe string substitution
-	// that could accidentally match an unrelated field with the same value as the upstream ID.
 	if envelope.Method == "eth_subscription" && envelope.Params != nil {
 		upID := envelope.Params.Subscription
 		s.mu.Lock()
@@ -407,7 +393,6 @@ func (s *wsSession) forwardToClient(msg []byte, mt int) error {
 		return s.writeToClient(mt, msg)
 	}
 
-	// Response to eth_subscribe: record the new subscription using the upstream-assigned ID.
 	if len(envelope.ID) > 0 {
 		rawID := string(envelope.ID)
 		s.mu.Lock()
@@ -422,7 +407,7 @@ func (s *wsSession) forwardToClient(msg []byte, mt int) error {
 			if json.Unmarshal(envelope.Result, &upstreamID) == nil && upstreamID != "" {
 				sub := &subscription{
 					subscribeParams: params,
-					clientID:        upstreamID, // client will use the upstream ID as their handle
+					clientID:        upstreamID,
 					upstreamID:      upstreamID,
 				}
 				s.mu.Lock()
@@ -466,7 +451,7 @@ func (s *wsSession) rewriteUnsubscribe(msg []byte) []byte {
 	s.mu.Unlock()
 
 	if !ok || sub.upstreamID == clientID {
-		return msg // IDs already match — no rewrite needed
+		return msg
 	}
 	req.Params[0] = sub.upstreamID
 	rewritten, err := json.Marshal(req)

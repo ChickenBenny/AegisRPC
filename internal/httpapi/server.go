@@ -1,8 +1,5 @@
 // Package httpapi wires the HTTP-facing routes of AegisRPC (JSON-RPC proxy,
 // WebSocket proxy, and Prometheus metrics) behind a single http.Server.
-//
-// main() builds the business dependencies (pool, cache, handler) and hands
-// them to New; route definitions and server lifecycle live here.
 package httpapi
 
 import (
@@ -20,11 +17,8 @@ import (
 // Server owns the http.Server and its mux. Construct with New, then call
 // Start in a goroutine and Shutdown on termination.
 //
-// draining is flipped to true at the very start of Shutdown so that any
-// load balancer's next /healthz probe sees 503 and removes us from
-// rotation before in-flight RPC requests are interrupted. The flag is
-// read on every /healthz request and only ever transitions false → true,
-// so atomic.Bool is sufficient (no need for a mutex).
+// draining is flipped to true at the start of Shutdown so that /healthz
+// returns 503 before in-flight requests are interrupted.
 type Server struct {
 	srv      *http.Server
 	draining atomic.Bool
@@ -58,10 +52,7 @@ func New(port int, handler *proxy.Handler, pool *upstream.Pool) *Server {
 	return s
 }
 
-// healthz is the /healthz probe handler. Returns 200 in normal operation;
-// once Shutdown has begun it returns 503 so an upstream load balancer
-// removes this instance from rotation before its in-flight requests are
-// drained. Body is plain text so kubectl / curl output stays readable.
+// healthz returns 200 normally and 503 once Shutdown has begun.
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	if s.draining.Load() {
@@ -86,14 +77,8 @@ func (s *Server) Start() error {
 }
 
 // Shutdown stops the server, waiting up to `timeout` for in-flight requests.
-//
-// The draining flag is flipped before http.Server.Shutdown is invoked so
-// that any /healthz probe arriving on an existing keep-alive connection
-// during the grace period sees 503 and triggers an LB-side removal. New
-// connections are refused by the listener (http.Server.Shutdown closes it
-// immediately), which would already cause LB health checks to fail — but
-// the explicit 503 makes the intent visible at the protocol level rather
-// than relying on TCP refused.
+// The draining flag is set first so that any /healthz probe on a keep-alive
+// connection sees 503 and triggers load-balancer removal.
 func (s *Server) Shutdown(timeout time.Duration) error {
 	s.draining.Store(true)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)

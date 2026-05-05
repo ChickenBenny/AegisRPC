@@ -341,8 +341,6 @@ func Parse() (Config, error) {
 		}
 	})
 
-	// Normalise enum-like values once so downstream callers can rely on
-	// the canonical lowercase form when matching.
 	cfg.CacheBackend = strings.ToLower(strings.TrimSpace(cfg.CacheBackend))
 	cfg.LogLevel = strings.ToLower(strings.TrimSpace(cfg.LogLevel))
 	cfg.LogFormat = strings.ToLower(strings.TrimSpace(cfg.LogFormat))

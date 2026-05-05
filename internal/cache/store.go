@@ -6,14 +6,10 @@ import "time"
 // Two implementations are provided:
 //
 //   - Cache (cache.go)      : in-process LRU with TTL, default for single-instance deployments.
-//   - RedisStore (redis.go) : remote shared store, opt-in for multi-replica deployments
-//     where every replica should observe the same cached responses.
+//   - RedisStore (redis.go) : remote shared store, opt-in for multi-replica deployments.
 //
 // A ttl of 0 means "never expire" — used for immutable responses such as
 // finalized block bodies and transaction receipts.
-//
-// Close releases any resources held by the store (network connections for
-// remote backends). The in-process Cache implements it as a no-op.
 type Store interface {
 	Get(key string) ([]byte, bool)
 	Set(key string, value []byte, ttl time.Duration)
@@ -21,7 +17,5 @@ type Store interface {
 	Close() error
 }
 
-// Compile-time assertion that *Cache satisfies Store. If anyone changes the
-// Cache method set incompatibly, the build breaks here instead of at the
-// call site.
+// Compile-time assertion: *Cache must satisfy Store.
 var _ Store = (*Cache)(nil)

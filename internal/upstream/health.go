@@ -80,18 +80,10 @@ func wsToHTTP(u string) string {
 	return u
 }
 
-// checkNode performs one health probe against a single upstream. The parent
-// ctx is provided by the caller (StartHealthChecks passes the pool's lifecycle
-// ctx) and is wrapped with timeout so that cancelling the parent — typically
-// at shutdown — aborts in-flight HTTP requests immediately rather than waiting
-// out the full probe timeout.
-//
-// Logging is transition-only: state-change events log at Info (recovery) or
-// Warn (degradation); steady-state probes (healthy still healthy, unhealthy
-// still unhealthy) log at Debug. This keeps INFO-level operator logs free of
-// the per-tick × per-node noise that the previous "[health] X OK" line
-// produced — every-15-seconds × N nodes regardless of whether anything had
-// actually changed.
+// checkNode performs one health probe against a single upstream.
+// ctx is wrapped with timeout so that cancelling the parent aborts in-flight
+// HTTP requests immediately rather than waiting out the full probe timeout.
+// Logging is transition-only: state changes log at Info/Warn; steady-state at Debug.
 func checkNode(parent context.Context, node *Upstream, timeout time.Duration) {
 	wasHealthy := node.IsHealthy()
 
@@ -107,13 +99,8 @@ func checkNode(parent context.Context, node *Upstream, timeout time.Duration) {
 	case wasHealthy && !healthy:
 		slog.Warn("upstream degraded", "node", host, "reason", reason)
 	case !wasHealthy && healthy:
-		// Recovery is its own signal — adding reason here would either be
-		// empty (normal recovery) or read confusingly (e.g.
-		// reason=rate_limited on a "recovered" line).
 		slog.Info("upstream recovered", "node", host, "block", blockHeight)
 	case healthy:
-		// Steady-state OK. Include reason so a persistent "rate_limited"
-		// state is still discoverable when an operator drops to debug.
 		if reason == "" {
 			slog.Debug("upstream ok", "node", host, "block", blockHeight)
 		} else {
@@ -162,7 +149,7 @@ func probeNode(parent context.Context, node *Upstream, timeout time.Duration) (h
 		return false, 0, fmt.Sprintf("http_%d", resp.StatusCode)
 	}
 
-	const maxResponseSize = 1 * 1024 * 1024 // 1 MB
+	const maxResponseSize = 1 * 1024 * 1024
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
 		return false, 0, fmt.Sprintf("read body: %v", err)

@@ -11,10 +11,8 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// redisOpTimeout bounds every individual Redis command on the proxy hot
-// path. The PING in NewRedisStore uses a longer 2s budget — startup is
-// allowed to be slower than a request-time call, where 200 ms is the
-// hard ceiling we are willing to add to a single RPC request.
+// redisOpTimeout bounds every individual Redis command on the proxy hot path.
+// Startup uses a longer 2s budget; request-time calls are capped at 200ms.
 const redisOpTimeout = 200 * time.Millisecond
 
 // RedisStore is a Store backed by a remote Redis instance. It is opt-in:
@@ -32,16 +30,13 @@ type RedisStore struct {
 	addr   string // host:port, never carries credentials
 	db     int
 
-	// degraded toggles 0→1 on the first failed op and 1→0 on the first
-	// success after that. Both transitions emit exactly one log line.
+	// degraded toggles 0→1 on the first failure and 1→0 on recovery;
+	// each transition emits exactly one log line.
 	degraded atomic.Int32
 }
 
 // NewRedisStore parses the Redis URL, dials once to verify connectivity,
-// and returns a usable Store. parent should be the proxy lifecycle
-// context — Get/Set/Delete derive child contexts from it so in-flight
-// calls cancel cleanly on shutdown instead of waiting out the full
-// per-op timeout.
+// and returns a usable Store. parent should be the proxy lifecycle context.
 func NewRedisStore(parent context.Context, redisURL string) (*RedisStore, error) {
 	opts, err := redis.ParseURL(redisURL)
 	if err != nil {
@@ -69,9 +64,7 @@ func (r *RedisStore) Addr() string {
 	return fmt.Sprintf("%s db=%d", r.addr, r.db)
 }
 
-// Get returns the value for key. Any error — including the redis.Nil
-// sentinel for a missing key, a network blip, or a timeout — is
-// treated as a cache miss.
+// Get returns the value for key; any error (including cache miss) is treated as a miss.
 func (r *RedisStore) Get(key string) ([]byte, bool) {
 	ctx, cancel := context.WithTimeout(r.parent, redisOpTimeout)
 	defer cancel()
@@ -114,23 +107,20 @@ func (r *RedisStore) Delete(key string) {
 	r.markHealthy()
 }
 
-// Close releases the underlying connection pool. Safe to call multiple
-// times — the underlying redis client is idempotent on Close.
+// Close releases the underlying connection pool.
 func (r *RedisStore) Close() error {
 	return r.client.Close()
 }
 
-// markDegraded records the first failure of a healthy → unhealthy
-// transition. Subsequent failures while already degraded are silent so
-// that a Redis outage does not flood logs at the proxy's request rate.
+// markDegraded logs the first failure of a healthy → unhealthy transition;
+// subsequent failures while already degraded are silent.
 func (r *RedisStore) markDegraded(op string, err error) {
 	if r.degraded.CompareAndSwap(0, 1) {
 		slog.Warn("redis op failed, switching to no-cache mode", "op", op, "err", err)
 	}
 }
 
-// markHealthy records a recovery (unhealthy → healthy). Logged once
-// per recovery; no-ops on the steady-state happy path.
+// markHealthy logs recovery (unhealthy → healthy) and is a no-op in steady state.
 func (r *RedisStore) markHealthy() {
 	if r.degraded.CompareAndSwap(1, 0) {
 		slog.Info("redis backend recovered")
