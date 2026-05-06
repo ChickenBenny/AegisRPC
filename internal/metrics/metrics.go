@@ -70,6 +70,89 @@ var CacheRequests = prometheus.NewCounterVec(
 )
 
 // ---------------------------------------------------------------------------
+// Method label normalisation
+// ---------------------------------------------------------------------------
+
+// knownMethods is the allowlist NormalizeMethod uses to bound the
+// `method` Prometheus label cardinality — without it, client-supplied
+// strings could mint unlimited series.
+//
+// TODO(phase 7): when multi-chain support lands, this should become
+// knownMethodsByChain and the metric labels should grow a "chain"
+// dimension. Today's list covers ETH + EVM-compatible L2.
+var knownMethods = map[string]struct{}{
+	// eth_* — bulk of dApp / wallet traffic
+	"eth_blockNumber":                   {},
+	"eth_chainId":                       {},
+	"eth_call":                          {},
+	"eth_createAccessList":              {},
+	"eth_estimateGas":                   {},
+	"eth_feeHistory":                    {},
+	"eth_gasPrice":                      {},
+	"eth_getBalance":                    {},
+	"eth_getBlockByHash":                {},
+	"eth_getBlockByNumber":              {},
+	"eth_getBlockTransactionCountByHash":   {},
+	"eth_getBlockTransactionCountByNumber": {},
+	"eth_getCode":                       {},
+	"eth_getLogs":                       {},
+	"eth_getProof":                      {},
+	"eth_getStorageAt":                  {},
+	"eth_getTransactionByHash":          {},
+	"eth_getTransactionCount":           {},
+	"eth_getTransactionReceipt":         {},
+	"eth_getUncleByBlockHashAndIndex":   {},
+	"eth_getUncleByBlockNumberAndIndex": {},
+	"eth_maxPriorityFeePerGas":          {},
+	"eth_sendRawTransaction":            {},
+	"eth_subscribe":                     {},
+	"eth_unsubscribe":                   {},
+	"eth_syncing":                       {},
+
+	// eth_* filter API — used by polling clients (ethers.js, web3.py)
+	"eth_newFilter":                  {},
+	"eth_newBlockFilter":             {},
+	"eth_newPendingTransactionFilter": {},
+	"eth_getFilterChanges":           {},
+	"eth_getFilterLogs":              {},
+	"eth_uninstallFilter":            {},
+
+	// net_* / web3_* — node introspection
+	"net_version":        {},
+	"net_listening":      {},
+	"net_peerCount":      {},
+	"web3_clientVersion": {},
+	"web3_sha3":          {},
+
+	// debug_* / trace_* — archive-node diagnostics
+	"debug_traceTransaction":      {},
+	"debug_traceCall":             {},
+	"debug_traceBlock":            {},
+	"debug_traceBlockByHash":      {},
+	"debug_traceBlockByNumber":    {},
+	"trace_block":                 {},
+	"trace_transaction":           {},
+	"trace_call":                  {},
+	"trace_callMany":              {},
+	"trace_filter":                {},
+	"trace_get":                   {},
+
+	// "unknown" is the handler's parse-failure sentinel — kept separate
+	// from "other" so dashboards distinguish bad-JSON from bad-method.
+	"unknown": {},
+}
+
+// NormalizeMethod returns method if it appears in the known-methods
+// allowlist, otherwise "other". Callers should pass the result — not the
+// raw method string — to WithLabelValues so cardinality stays bounded.
+func NormalizeMethod(method string) string {
+	if _, ok := knownMethods[method]; ok {
+		return method
+	}
+	return "other"
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
