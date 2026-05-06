@@ -138,6 +138,34 @@ func TestShutdown_FlipsDrainingDuringDrain(t *testing.T) {
 	<-serverDone // Serve returns http.ErrServerClosed after Shutdown
 }
 
+// TestNew_ConfiguresTimeouts asserts that the http.Server built by New()
+// has every timeout field populated. Forgetting any of these would
+// reopen the slowloris hole the timeouts close — losing the timeouts
+// silently is plausible during refactors, so verifying non-zero is the
+// minimum guard. Specific durations are not asserted; the values are
+// design decisions documented in server.go and may change.
+//
+// nil dependencies are safe here: New() only stores the handler and pool
+// pointers in route closures that dereference them on a request, and
+// this test never dispatches a request through / or /ws.
+func TestNew_ConfiguresTimeouts(t *testing.T) {
+	s := New(8080, 30*time.Second, nil, nil)
+
+	assert.NotZero(t, s.srv.ReadHeaderTimeout, "ReadHeaderTimeout must be set (slowloris defence)")
+	assert.NotZero(t, s.srv.ReadTimeout, "ReadTimeout must be set")
+	assert.NotZero(t, s.srv.WriteTimeout, "WriteTimeout must be set")
+	assert.NotZero(t, s.srv.IdleTimeout, "IdleTimeout must be set")
+}
+
+// TestNew_WriteTimeoutHonored verifies the writeTimeout argument propagates
+// to http.Server.WriteTimeout. This is what allows operators with archive
+// workloads (eth_getLogs over wide ranges, debug_trace*) to raise the
+// cap above the wallet-friendly default without forking the codebase.
+func TestNew_WriteTimeoutHonored(t *testing.T) {
+	s := New(8080, 90*time.Second, nil, nil)
+	assert.Equal(t, 90*time.Second, s.srv.WriteTimeout)
+}
+
 // TestNew_WiresHealthzRoute is a smoke test that verifies New()'s route
 // table actually dispatches /healthz to s.healthz, not some other handler.
 // The handler-level tests above bypass New() and call s.healthz directly,
@@ -147,7 +175,7 @@ func TestNew_WiresHealthzRoute(t *testing.T) {
 	// proxy.Handler and upstream.Pool are not exercised by /healthz; pass
 	// nil pointers — the route closures for / and /ws dereference them
 	// only when their own routes are hit, which this test does not do.
-	s := New(8080, nil, nil)
+	s := New(8080, 30*time.Second, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()

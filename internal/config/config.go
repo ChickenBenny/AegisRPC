@@ -36,6 +36,12 @@ type Config struct {
 	// key=value output or "json" for structured logs suitable for
 	// shipping to ELK / Loki / Datadog.
 	LogFormat string
+	// WriteTimeout caps how long the HTTP server may take to write a
+	// full response. The default 30s is safe for wallet/dApp traffic;
+	// archive deployments serving wide-range eth_getLogs or debug_trace*
+	// queries may need to raise this to 120s+ to avoid mid-response
+	// connection resets.
+	WriteTimeout time.Duration
 }
 
 // Default returns a Config populated with production-ready defaults.
@@ -53,6 +59,7 @@ func Default() Config {
 		RedisURL:        "",
 		LogLevel:        "info",
 		LogFormat:       "text",
+		WriteTimeout:    30 * time.Second,
 	}
 }
 
@@ -75,6 +82,7 @@ type yamlConfig struct {
 	RedisURL        string   `yaml:"redis_url"`
 	LogLevel        string   `yaml:"log_level"`
 	LogFormat       string   `yaml:"log_format"`
+	WriteTimeout    string   `yaml:"write_timeout"`
 }
 
 // LoadFile reads a YAML config file and merges non-zero values into cfg.
@@ -139,6 +147,13 @@ func LoadFile(path string, cfg *Config) error {
 	if yc.LogFormat != "" {
 		cfg.LogFormat = yc.LogFormat
 	}
+	if yc.WriteTimeout != "" {
+		d, err := time.ParseDuration(yc.WriteTimeout)
+		if err != nil {
+			return fmt.Errorf("invalid write_timeout %q: %w", yc.WriteTimeout, err)
+		}
+		cfg.WriteTimeout = d
+	}
 
 	return nil
 }
@@ -159,6 +174,7 @@ func ApplyEnv(cfg *Config) {
 	envString("AEGIS_REDIS_URL", func(v string) { cfg.RedisURL = v })
 	envString("AEGIS_LOG_LEVEL", func(v string) { cfg.LogLevel = v })
 	envString("AEGIS_LOG_FORMAT", func(v string) { cfg.LogFormat = v })
+	envDuration("AEGIS_WRITE_TIMEOUT", func(v time.Duration) { cfg.WriteTimeout = v })
 }
 
 // envInt reads an environment variable as a base-10 integer.
@@ -266,6 +282,9 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("log_format %q is not valid (allowed: text, json)", c.LogFormat)
 	}
+	if c.WriteTimeout <= 0 {
+		return fmt.Errorf("write_timeout must be positive, got %s", c.WriteTimeout)
+	}
 	return nil
 }
 
@@ -289,6 +308,7 @@ func Parse() (Config, error) {
 	redisURL := flag.String("redis-url", "", "Redis connection URL when cache-backend=redis (env AEGIS_REDIS_URL)")
 	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error (env AEGIS_LOG_LEVEL)")
 	logFormat := flag.String("log-format", "text", "Log format: text or json (env AEGIS_LOG_FORMAT)")
+	writeTimeout := flag.Duration("write-timeout", 30*time.Second, "Maximum response write duration; raise for archive RPC (env AEGIS_WRITE_TIMEOUT)")
 	flag.Parse()
 
 	// -- layer 1: defaults --------------------------------------------------
@@ -338,6 +358,8 @@ func Parse() (Config, error) {
 			cfg.LogLevel = *logLevel
 		case "log-format":
 			cfg.LogFormat = *logFormat
+		case "write-timeout":
+			cfg.WriteTimeout = *writeTimeout
 		}
 	})
 
