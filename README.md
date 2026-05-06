@@ -45,6 +45,7 @@ CLI flags  >  Environment variables  >  YAML config file  >  Built-in defaults
 | `AEGIS_LAG_THRESHOLD` | `10` | Max blocks a node may lag behind the best before being marked unhealthy |
 | `AEGIS_LOG_LEVEL` | `info` | Log threshold: `debug`, `info`, `warn`, or `error`. `debug` reveals every per-probe outcome; `info` only logs state transitions and notable events. |
 | `AEGIS_LOG_FORMAT` | `text` | Log encoding: `text` (human-readable `key=value`) or `json` (one JSON object per line, suited for ELK / Loki / Datadog). |
+| `AEGIS_WRITE_TIMEOUT` | `30s` | Maximum response write duration. Default suits wallet/dApp traffic; archive deployments serving wide-range `eth_getLogs` or `debug_trace*` typically need `120s` or higher to avoid mid-response connection resets. |
 
 Duration values accept Go duration strings: `5s`, `1m`, `500ms`, etc.
 

@@ -30,7 +30,11 @@ type Server struct {
 //	/ws       GET   → WebSocket proxy (upgrade)
 //	/metrics  GET   → Prometheus scrape endpoint
 //	/healthz  GET   → readiness probe; 200 normally, 503 once Shutdown begins
-func New(port int, handler *proxy.Handler, pool *upstream.Pool) *Server {
+//
+// writeTimeout sets http.Server.WriteTimeout. Archive deployments serving
+// wide-range eth_getLogs / debug_trace* should pass a generous value
+// (120s+); the default 30s is safe for wallet/dApp traffic.
+func New(port int, writeTimeout time.Duration, handler *proxy.Handler, pool *upstream.Pool) *Server {
 	s := &Server{}
 
 	mux := http.NewServeMux()
@@ -48,6 +52,14 @@ func New(port int, handler *proxy.Handler, pool *upstream.Pool) *Server {
 	s.srv = &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
 		Handler: mux,
+		// Slowloris defence: ReadHeaderTimeout caps the wait for the
+		// request header's \r\n\r\n; the others bound the rest of the
+		// request lifecycle. WebSocket-safe — gorilla hijacks the conn
+		// on Upgrade and manages its own deadlines afterwards.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       120 * time.Second,
 	}
 	return s
 }

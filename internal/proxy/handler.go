@@ -49,8 +49,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
 	start := time.Now()
 	defer func() {
-		metrics.RequestsTotal.WithLabelValues(method, status).Inc()
-		metrics.RequestDuration.WithLabelValues(method).Observe(time.Since(start).Seconds())
+		// Normalise method against the allowlist so client-supplied
+		// method strings cannot blow up Prometheus label cardinality.
+		// `method` itself stays raw — it is also fed to the router for
+		// capability matching, which needs the real name.
+		labelMethod := metrics.NormalizeMethod(method)
+		metrics.RequestsTotal.WithLabelValues(labelMethod, status).Inc()
+		metrics.RequestDuration.WithLabelValues(labelMethod).Observe(time.Since(start).Seconds())
 	}()
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)

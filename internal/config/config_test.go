@@ -22,6 +22,7 @@ func TestDefault(t *testing.T) {
 	assert.Equal(t, uint64(10), cfg.LagThreshold)
 	assert.Equal(t, "info", cfg.LogLevel)
 	assert.Equal(t, "text", cfg.LogFormat)
+	assert.Equal(t, 30*time.Second, cfg.WriteTimeout)
 }
 
 func TestApplyEnv(t *testing.T) {
@@ -170,6 +171,18 @@ func TestValidate_LogLevel(t *testing.T) {
 	}
 	cfg.LogLevel = "verbose"
 	assert.ErrorContains(t, cfg.Validate(), "log_level")
+}
+
+func TestValidate_WriteTimeout(t *testing.T) {
+	cfg := Default()
+	cfg.WriteTimeout = 0
+	assert.ErrorContains(t, cfg.Validate(), "write_timeout")
+
+	cfg.WriteTimeout = -1 * time.Second
+	assert.ErrorContains(t, cfg.Validate(), "write_timeout")
+
+	cfg.WriteTimeout = 1 * time.Millisecond
+	assert.NoError(t, cfg.Validate(), "any positive duration is accepted")
 }
 
 func TestValidate_LogFormat(t *testing.T) {
