@@ -82,6 +82,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Batch (JSON-RPC 2.0 §6) — forward as-is, uncached. Per-item caching
+	// is tracked as audit #30; this minimal path unblocks SDK BatchProvider
+	// users that the previous single-object Unmarshal rejected with 400.
+	if isBatch(body) {
+		method = "batch"
+		status = "uncacheable"
+		if err := h.proxyDirect(w, r, body, method); err != nil {
+			status = "error"
+		}
+		return
+	}
+
 	var req models.RPCRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		status = "error"
@@ -203,6 +215,22 @@ func buildErrorEnvelope(id json.RawMessage, e *models.RPCError) ([]byte, error) 
 		ID:      id,
 		Error:   e,
 	})
+}
+
+// isBatch reports whether the body starts with "[" (JSON-RPC 2.0 batch),
+// skipping any leading whitespace per RFC 8259.
+func isBatch(body []byte) bool {
+	for _, b := range body {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '[':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // proxyDirect forwards the request to the upstream without any caching.

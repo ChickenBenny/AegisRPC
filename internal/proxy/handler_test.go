@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -144,6 +145,75 @@ func rpcRequestWithID(method, params, idJSON string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	return req
+}
+
+// ---------------------------------------------------------------------------
+// audit #3 — JSON-RPC batch requests are detected and forwarded as-is.
+// ---------------------------------------------------------------------------
+
+func TestHandler_Batch_ForwardedToUpstream(t *testing.T) {
+	var receivedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Write([]byte(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"}]`))
+	}))
+	defer srv.Close()
+
+	h := newHandler(t, srv.URL, 5*time.Second)
+
+	batchBody := `[{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]},{"jsonrpc":"2.0","id":2,"method":"eth_chainId","params":[]}]`
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(batchBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "batch request must not be rejected with 400")
+	assert.Equal(t, batchBody, string(receivedBody), "batch body must reach upstream byte-exact")
+	assert.Contains(t, rec.Body.String(), `"id":1`)
+	assert.Contains(t, rec.Body.String(), `"id":2`)
+}
+
+func TestHandler_Batch_IsUncached(t *testing.T) {
+	var callCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		w.Write([]byte(`[{"jsonrpc":"2.0","id":1,"result":"0x1"}]`))
+	}))
+	defer srv.Close()
+
+	h := newHandler(t, srv.URL, 5*time.Second)
+	batchBody := `[{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}]`
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(batchBody))
+		req.Header.Set("Content-Type", "application/json")
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	assert.Equal(t, int32(3), callCount.Load(),
+		"batch path is intentionally uncached (audit #30) — every call must hit upstream")
+}
+
+func TestIsBatch(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"plain object", `{"id":1}`, false},
+		{"plain array", `[{"id":1}]`, true},
+		{"leading spaces before array", `   [{"id":1}]`, true},
+		{"leading newlines before array", "\n\n[{}]", true},
+		{"leading whitespace mix before object", "  \t\n{}", false},
+		{"empty body", "", false},
+		{"only whitespace", "   ", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isBatch([]byte(tc.body)))
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------
