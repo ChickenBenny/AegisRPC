@@ -189,10 +189,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case ret.rawBody != nil:
 		w.Write(ret.rawBody)
 	case ret.rpcError != nil:
-		envelope, _ := buildErrorEnvelope(req.ID, ret.rpcError)
+		envelope, eerr := buildErrorEnvelope(req.ID, ret.rpcError)
+		if eerr != nil {
+			status = "error"
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 		w.Write(envelope)
 	default:
-		envelope, _ := buildResultEnvelope(req.ID, ret.result)
+		envelope, eerr := buildResultEnvelope(req.ID, ret.result)
+		if eerr != nil {
+			status = "error"
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 		w.Write(envelope)
 	}
 }
