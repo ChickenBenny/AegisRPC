@@ -14,9 +14,32 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// upgrader is the package-default Upgrader used by tests' mock-upstream
+// helpers. ServeWS builds its own per-instance upgrader from the
+// configured allowlist.
 var upgrader = websocket.Upgrader{
-	// Allow all origins in the proxy; callers are responsible for auth.
 	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+// makeUpgrader builds an Upgrader whose CheckOrigin permits only the listed
+// origins (exact byte match on the Origin header). Empty list = allow-all
+// for backward compat; production should set AEGIS_WS_ALLOWED_ORIGINS to
+// defend against cross-site WebSocket hijacking.
+func makeUpgrader(allowedOrigins []string) websocket.Upgrader {
+	return websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			if len(allowedOrigins) == 0 {
+				return true
+			}
+			origin := r.Header.Get("Origin")
+			for _, a := range allowedOrigins {
+				if a == origin {
+					return true
+				}
+			}
+			return false
+		},
+	}
 }
 
 // subscription tracks one active eth_subscribe registration.
@@ -96,9 +119,12 @@ func (s *wsSession) writeToClient(mt int, msg []byte) error {
 //
 // replayPendingCap bounds how many upstream frames each session may buffer
 // during the reconnect / subscription replay window (audit #5).
-func ServeWS(pool *upstream.Pool, replayPendingCap int) http.HandlerFunc {
+// allowedOrigins is an exact-match origin allowlist for upgrade requests;
+// empty = allow all (audit #15).
+func ServeWS(pool *upstream.Pool, replayPendingCap int, allowedOrigins []string) http.HandlerFunc {
+	up := makeUpgrader(allowedOrigins)
 	return func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
+		conn, err := up.Upgrade(w, r, nil)
 		if err != nil {
 			slog.Error("websocket upgrade failed", "err", err)
 			return

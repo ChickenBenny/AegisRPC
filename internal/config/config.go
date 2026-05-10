@@ -46,6 +46,10 @@ type Config struct {
 	// during reconnect / subscription replay. 1024 fits wallet/dApp
 	// traffic; indexer-heavy deployments may want to raise this.
 	WSReplayPendingCap int
+	// WSAllowedOrigins is the exact-match origin allowlist for /ws upgrade
+	// requests. Empty (default) = allow-all for backward compat; any
+	// non-empty value activates strict checking.
+	WSAllowedOrigins []string
 }
 
 // Default returns a Config populated with production-ready defaults.
@@ -65,6 +69,7 @@ func Default() Config {
 		LogFormat:          "text",
 		WriteTimeout:       30 * time.Second,
 		WSReplayPendingCap: 1024,
+		WSAllowedOrigins:   nil, // empty = allow all (backward compat)
 	}
 }
 
@@ -89,6 +94,7 @@ type yamlConfig struct {
 	LogFormat          string   `yaml:"log_format"`
 	WriteTimeout       string   `yaml:"write_timeout"`
 	WSReplayPendingCap *int     `yaml:"ws_replay_pending_cap"`
+	WSAllowedOrigins   []string `yaml:"ws_allowed_origins"`
 }
 
 // LoadFile reads a YAML config file and merges non-zero values into cfg.
@@ -163,6 +169,9 @@ func LoadFile(path string, cfg *Config) error {
 	if yc.WSReplayPendingCap != nil {
 		cfg.WSReplayPendingCap = *yc.WSReplayPendingCap
 	}
+	if yc.WSAllowedOrigins != nil {
+		cfg.WSAllowedOrigins = yc.WSAllowedOrigins
+	}
 
 	return nil
 }
@@ -185,6 +194,7 @@ func ApplyEnv(cfg *Config) {
 	envString("AEGIS_LOG_FORMAT", func(v string) { cfg.LogFormat = v })
 	envDuration("AEGIS_WRITE_TIMEOUT", func(v time.Duration) { cfg.WriteTimeout = v })
 	envInt("AEGIS_WS_REPLAY_PENDING_CAP", func(v int) { cfg.WSReplayPendingCap = v })
+	envStringSlice("AEGIS_WS_ALLOWED_ORIGINS", ",", func(v []string) { cfg.WSAllowedOrigins = v })
 }
 
 // envInt reads an environment variable as a base-10 integer.
@@ -323,6 +333,7 @@ func Parse() (Config, error) {
 	logFormat := flag.String("log-format", "text", "Log format: text or json (env AEGIS_LOG_FORMAT)")
 	writeTimeout := flag.Duration("write-timeout", 30*time.Second, "Maximum response write duration; raise for archive RPC (env AEGIS_WRITE_TIMEOUT)")
 	wsReplayCap := flag.Int("ws-replay-pending-cap", 1024, "Max upstream frames buffered during WS subscription replay (env AEGIS_WS_REPLAY_PENDING_CAP)")
+	wsAllowedOrigins := flag.String("ws-allowed-origins", "", "Comma-separated WS origin allowlist; empty = allow-all (env AEGIS_WS_ALLOWED_ORIGINS)")
 	flag.Parse()
 
 	// -- layer 1: defaults --------------------------------------------------
@@ -376,6 +387,8 @@ func Parse() (Config, error) {
 			cfg.WriteTimeout = *writeTimeout
 		case "ws-replay-pending-cap":
 			cfg.WSReplayPendingCap = *wsReplayCap
+		case "ws-allowed-origins":
+			cfg.WSAllowedOrigins = splitTrimmed(*wsAllowedOrigins, ",")
 		}
 	})
 

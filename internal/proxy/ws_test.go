@@ -116,6 +116,38 @@ func TestWSSession_RewriteUnsubscribe_IDsMatch_Passthrough(t *testing.T) {
 	assert.Equal(t, msg, out, "when IDs match no rewrite is needed")
 }
 
+// ─── makeUpgrader (origin allowlist, audit #15) ─────────────────────────────
+
+func TestMakeUpgrader_EmptyAllowlist_AllowsAll(t *testing.T) {
+	up := makeUpgrader(nil)
+	for _, origin := range []string{"", "https://app.example.com", "evil.example.com"} {
+		req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+		req.Header.Set("Origin", origin)
+		assert.True(t, up.CheckOrigin(req),
+			"empty allowlist must keep allow-all backward compat (origin=%q)", origin)
+	}
+}
+
+func TestMakeUpgrader_NonEmptyAllowlist_ExactMatchOnly(t *testing.T) {
+	up := makeUpgrader([]string{"https://app.example.com", "https://other.example.com"})
+	cases := []struct {
+		origin string
+		want   bool
+	}{
+		{"https://app.example.com", true},
+		{"https://other.example.com", true},
+		{"https://evil.example.com", false},
+		{"http://app.example.com", false},  // scheme differs
+		{"https://app.example.com:443", false}, // explicit port differs
+		{"", false},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+		req.Header.Set("Origin", tc.origin)
+		assert.Equal(t, tc.want, up.CheckOrigin(req), "origin=%q", tc.origin)
+	}
+}
+
 // ─── replaySubscriptions ─────────────────────────────────────────────────────
 
 func TestWSSession_ReplaySubscriptions_UpdatesMapping(t *testing.T) {
@@ -268,7 +300,7 @@ func TestServeWS_ProxiesMessages(t *testing.T) {
 	})
 
 	pool := poolWithURL(t, upstreamURL)
-	srv := httptest.NewServer(ServeWS(pool, 1024))
+	srv := httptest.NewServer(ServeWS(pool, 1024, nil))
 	t.Cleanup(srv.Close)
 
 	client := dialTestServer(t, srv)
@@ -329,7 +361,7 @@ func TestServeWS_Subscribe_RecordsAndForwardsNotification(t *testing.T) {
 	})
 
 	pool := poolWithURL(t, upstreamURL)
-	srv := httptest.NewServer(ServeWS(pool, 1024))
+	srv := httptest.NewServer(ServeWS(pool, 1024, nil))
 	t.Cleanup(srv.Close)
 
 	client := dialTestServer(t, srv)
@@ -425,7 +457,7 @@ func TestServeWS_Failover_RemapsSubscriptionID(t *testing.T) {
 	ws2 := "ws" + strings.TrimPrefix(upstream2.URL, "http")
 	pool := poolWithURLs(t, ws1, ws2)
 
-	srv := httptest.NewServer(ServeWS(pool, 1024))
+	srv := httptest.NewServer(ServeWS(pool, 1024, nil))
 	t.Cleanup(srv.Close)
 
 	client := dialTestServer(t, srv)

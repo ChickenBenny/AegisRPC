@@ -37,7 +37,9 @@ type Server struct {
 //
 // wsReplayPendingCap caps how many upstream frames each WS session may
 // buffer during reconnect / subscription replay (see audit #5).
-func New(port int, writeTimeout time.Duration, wsReplayPendingCap int, handler *proxy.Handler, pool *upstream.Pool) *Server {
+// wsAllowedOrigins is the WS upgrade origin allowlist; empty = allow all
+// (audit #15).
+func New(port int, writeTimeout time.Duration, wsReplayPendingCap int, wsAllowedOrigins []string, handler *proxy.Handler, pool *upstream.Pool) *Server {
 	s := &Server{}
 
 	mux := http.NewServeMux()
@@ -48,7 +50,7 @@ func New(port int, writeTimeout time.Duration, wsReplayPendingCap int, handler *
 		}
 		handler.ServeHTTP(w, r)
 	})
-	mux.HandleFunc("/ws", proxy.ServeWS(pool, wsReplayPendingCap))
+	mux.HandleFunc("/ws", proxy.ServeWS(pool, wsReplayPendingCap, wsAllowedOrigins))
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/healthz", s.healthz)
 

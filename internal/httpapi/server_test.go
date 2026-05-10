@@ -149,7 +149,7 @@ func TestShutdown_FlipsDrainingDuringDrain(t *testing.T) {
 // pointers in route closures that dereference them on a request, and
 // this test never dispatches a request through / or /ws.
 func TestNew_ConfiguresTimeouts(t *testing.T) {
-	s := New(8080, 30*time.Second, 1024, nil, nil)
+	s := New(8080, 30*time.Second, 1024, nil, nil, nil)
 
 	assert.NotZero(t, s.srv.ReadHeaderTimeout, "ReadHeaderTimeout must be set (slowloris defence)")
 	assert.NotZero(t, s.srv.ReadTimeout, "ReadTimeout must be set")
@@ -162,7 +162,7 @@ func TestNew_ConfiguresTimeouts(t *testing.T) {
 // workloads (eth_getLogs over wide ranges, debug_trace*) to raise the
 // cap above the wallet-friendly default without forking the codebase.
 func TestNew_WriteTimeoutHonored(t *testing.T) {
-	s := New(8080, 90*time.Second, 1024, nil, nil)
+	s := New(8080, 90*time.Second, 1024, nil, nil, nil)
 	assert.Equal(t, 90*time.Second, s.srv.WriteTimeout)
 }
 
@@ -175,7 +175,7 @@ func TestNew_WiresHealthzRoute(t *testing.T) {
 	// proxy.Handler and upstream.Pool are not exercised by /healthz; pass
 	// nil pointers — the route closures for / and /ws dereference them
 	// only when their own routes are hit, which this test does not do.
-	s := New(8080, 30*time.Second, 1024, nil, nil)
+	s := New(8080, 30*time.Second, 1024, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
