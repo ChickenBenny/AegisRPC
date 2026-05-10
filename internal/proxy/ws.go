@@ -264,9 +264,13 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 func (s *wsSession) pump(ctx context.Context, up *websocket.Conn, fromClient <-chan clientFrame, clientGone <-chan struct{}) (clientLeft bool) {
 	upDone := make(chan struct{})
 
-	// Pong handler: clears the read deadline so the connection stays alive between ping cycles.
+	// Initial deadline so DOA upstreams time out within one heartbeat
+	// (audit #14). All later updates happen in the reader goroutine via
+	// the pong handler — gorilla forbids concurrent read-side calls
+	// (audit #4).
+	up.SetReadDeadline(time.Now().Add(s.pingPeriod + s.pongWait))
 	up.SetPongHandler(func(string) error {
-		up.SetReadDeadline(time.Time{})
+		up.SetReadDeadline(time.Now().Add(s.pingPeriod + s.pongWait))
 		return nil
 	})
 
@@ -295,7 +299,8 @@ func (s *wsSession) pump(ctx context.Context, up *websocket.Conn, fromClient <-c
 		case <-ctx.Done():
 			return true
 		case <-pingTicker.C:
-			up.SetReadDeadline(time.Now().Add(s.pongWait))
+			// WriteControl is the one exception gorilla guarantees is
+			// concurrency-safe with read-side methods.
 			if err := up.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(s.pongWait)); err != nil {
 				up.Close()
 				<-upDone
