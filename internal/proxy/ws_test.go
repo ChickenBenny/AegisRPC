@@ -52,11 +52,12 @@ func dialTestServer(t *testing.T, srv *httptest.Server) *websocket.Conn {
 // indefinitely, preventing the timeout from ever triggering.
 func newTestSession() *wsSession {
 	return &wsSession{
-		subs:       make(map[string]*subscription),
-		upToClient: make(map[string]string),
-		pending:    make(map[string]json.RawMessage),
-		pingPeriod: 100 * time.Millisecond,
-		pongWait:   50 * time.Millisecond,
+		subs:             make(map[string]*subscription),
+		upToClient:       make(map[string]string),
+		pending:          make(map[string]json.RawMessage),
+		pingPeriod:       100 * time.Millisecond,
+		pongWait:         50 * time.Millisecond,
+		replayPendingCap: 1024,
 	}
 }
 
@@ -147,7 +148,8 @@ func TestWSSession_ReplaySubscriptions_UpdatesMapping(t *testing.T) {
 	require.NoError(t, err)
 	defer upConn.Close()
 
-	require.NoError(t, sess.replaySubscriptions(upConn))
+	_, err = sess.replaySubscriptions(upConn)
+	require.NoError(t, err)
 
 	// upstreamID must be updated to the new ID
 	assert.Equal(t, "0xNEWUPSTREAMID", sess.subs["0xCLIENTID"].upstreamID)
@@ -156,6 +158,76 @@ func TestWSSession_ReplaySubscriptions_UpdatesMapping(t *testing.T) {
 	// Old upstream ID must be removed
 	_, oldStillPresent := sess.upToClient["0xOLDID"]
 	assert.False(t, oldStillPresent, "stale upstream ID must be removed from upToClient")
+}
+
+// Notifications arriving during the replay window must surface in the
+// returned pending slice, not get silently dropped (audit #5).
+func TestWSSession_ReplaySubscriptions_BuffersNonReplayFrames(t *testing.T) {
+	upstreamURL := mockUpstreamWS(t, func(conn *websocket.Conn) {
+		_, msg, err := conn.ReadMessage()
+		require.NoError(t, err)
+		var req map[string]any
+		require.NoError(t, json.Unmarshal(msg, &req))
+
+		// Send a notification first — pre-fix this got `continue`'d and lost.
+		conn.WriteMessage(websocket.TextMessage, []byte(
+			`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"0xOLDID","result":{"number":"0x1"}}}`))
+		// Then the replay response.
+		conn.WriteJSON(map[string]any{
+			"jsonrpc": "2.0", "id": req["id"], "result": "0xNEWID",
+		})
+	})
+
+	sess := newTestSession()
+	sess.subs["0xCLIENTID"] = &subscription{
+		subscribeParams: json.RawMessage(`["newHeads"]`),
+		clientID:        "0xCLIENTID", upstreamID: "0xOLDID",
+	}
+	sess.upToClient["0xOLDID"] = "0xCLIENTID"
+
+	upConn, _, err := websocket.DefaultDialer.Dial(upstreamURL, nil)
+	require.NoError(t, err)
+	defer upConn.Close()
+
+	pending, err := sess.replaySubscriptions(upConn)
+	require.NoError(t, err)
+	require.Len(t, pending, 1, "non-replay frame must surface in pending slice")
+	assert.Contains(t, string(pending[0].msg), "eth_subscription")
+}
+
+// Once replayPendingCap is reached, additional non-replay frames must be
+// dropped. cap=2 + 5 inbound notifications keeps the test deterministic.
+func TestWSSession_ReplaySubscriptions_PendingCapDropsExcess(t *testing.T) {
+	upstreamURL := mockUpstreamWS(t, func(conn *websocket.Conn) {
+		_, msg, err := conn.ReadMessage()
+		require.NoError(t, err)
+		var req map[string]any
+		require.NoError(t, json.Unmarshal(msg, &req))
+
+		for i := 0; i < 5; i++ {
+			conn.WriteMessage(websocket.TextMessage, []byte(
+				fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_subscription","params":{"subscription":"0xOLDID","result":{"n":%d}}}`, i)))
+		}
+		conn.WriteJSON(map[string]any{
+			"jsonrpc": "2.0", "id": req["id"], "result": "0xNEWID",
+		})
+	})
+
+	sess := newTestSession()
+	sess.replayPendingCap = 2 // override default 1024 so the test is deterministic
+	sess.subs["0xCLIENTID"] = &subscription{
+		subscribeParams: json.RawMessage(`["newHeads"]`),
+		clientID:        "0xCLIENTID", upstreamID: "0xOLDID",
+	}
+	sess.upToClient["0xOLDID"] = "0xCLIENTID"
+
+	upConn, _, err := websocket.DefaultDialer.Dial(upstreamURL, nil)
+	require.NoError(t, err)
+	defer upConn.Close()
+
+	pending, err := sess.replaySubscriptions(upConn)
+	require.NoError(t, err)
+	assert.Len(t, pending, 2, "pending must be capped at replayPendingCap")
 }
 
 func TestWSSession_ReplaySubscriptions_Empty_NoOp(t *testing.T) {
@@ -173,7 +245,7 @@ func TestWSSession_ReplaySubscriptions_Empty_NoOp(t *testing.T) {
 	require.NoError(t, err)
 	defer upConn.Close()
 
-	assert.NoError(t, sess.replaySubscriptions(upConn))
+	_, err = sess.replaySubscriptions(upConn); assert.NoError(t, err)
 }
 
 // ─── ServeWS integration ─────────────────────────────────────────────────────
@@ -196,7 +268,7 @@ func TestServeWS_ProxiesMessages(t *testing.T) {
 	})
 
 	pool := poolWithURL(t, upstreamURL)
-	srv := httptest.NewServer(ServeWS(pool))
+	srv := httptest.NewServer(ServeWS(pool, 1024))
 	t.Cleanup(srv.Close)
 
 	client := dialTestServer(t, srv)
@@ -257,7 +329,7 @@ func TestServeWS_Subscribe_RecordsAndForwardsNotification(t *testing.T) {
 	})
 
 	pool := poolWithURL(t, upstreamURL)
-	srv := httptest.NewServer(ServeWS(pool))
+	srv := httptest.NewServer(ServeWS(pool, 1024))
 	t.Cleanup(srv.Close)
 
 	client := dialTestServer(t, srv)
@@ -353,7 +425,7 @@ func TestServeWS_Failover_RemapsSubscriptionID(t *testing.T) {
 	ws2 := "ws" + strings.TrimPrefix(upstream2.URL, "http")
 	pool := poolWithURLs(t, ws1, ws2)
 
-	srv := httptest.NewServer(ServeWS(pool))
+	srv := httptest.NewServer(ServeWS(pool, 1024))
 	t.Cleanup(srv.Close)
 
 	client := dialTestServer(t, srv)
@@ -492,7 +564,7 @@ func TestWSSession_ReplaySubscriptions_MarshalError(t *testing.T) {
 	require.NoError(t, err)
 	defer upConn.Close()
 
-	err = sess.replaySubscriptions(upConn)
+	_, err = sess.replaySubscriptions(upConn)
 	assert.Error(t, err, "replaySubscriptions must return an error when marshal fails")
 	assert.Contains(t, err.Error(), "marshal replay")
 

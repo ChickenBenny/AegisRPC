@@ -42,24 +42,29 @@ type Config struct {
 	// queries may need to raise this to 120s+ to avoid mid-response
 	// connection resets.
 	WriteTimeout time.Duration
+	// WSReplayPendingCap bounds upstream frames buffered per WS session
+	// during reconnect / subscription replay. 1024 fits wallet/dApp
+	// traffic; indexer-heavy deployments may want to raise this.
+	WSReplayPendingCap int
 }
 
 // Default returns a Config populated with production-ready defaults.
 func Default() Config {
 	return Config{
-		Port:            8080,
-		Upstreams:       []string{"https://eth.llamarpc.com"},
-		MutableTTL:      12 * time.Second,
-		MaxCacheEntries: 10_000,
-		FinalityDepth:   12,
-		HealthInterval:  15 * time.Second,
-		ProbeTimeout:    5 * time.Second,
-		LagThreshold:    10,
-		CacheBackend:    "memory",
-		RedisURL:        "",
-		LogLevel:        "info",
-		LogFormat:       "text",
-		WriteTimeout:    30 * time.Second,
+		Port:               8080,
+		Upstreams:          []string{"https://eth.llamarpc.com"},
+		MutableTTL:         12 * time.Second,
+		MaxCacheEntries:    10_000,
+		FinalityDepth:      12,
+		HealthInterval:     15 * time.Second,
+		ProbeTimeout:       5 * time.Second,
+		LagThreshold:       10,
+		CacheBackend:       "memory",
+		RedisURL:           "",
+		LogLevel:           "info",
+		LogFormat:          "text",
+		WriteTimeout:       30 * time.Second,
+		WSReplayPendingCap: 1024,
 	}
 }
 
@@ -70,19 +75,20 @@ func Default() Config {
 //     the zero-value check (if yc.MaxCacheEntries != 0) would silently skip a
 //     legitimate max_cache_entries: 0 (unlimited) setting.
 type yamlConfig struct {
-	Port            *int     `yaml:"port"`
-	Upstreams       []string `yaml:"upstreams"`
-	MutableTTL      string   `yaml:"mutable_ttl"`
-	MaxCacheEntries *int     `yaml:"max_cache_entries"`
-	FinalityDepth   *uint64  `yaml:"finality_depth"`
-	HealthInterval  string   `yaml:"health_interval"`
-	ProbeTimeout    string   `yaml:"probe_timeout"`
-	LagThreshold    *uint64  `yaml:"lag_threshold"`
-	CacheBackend    string   `yaml:"cache_backend"`
-	RedisURL        string   `yaml:"redis_url"`
-	LogLevel        string   `yaml:"log_level"`
-	LogFormat       string   `yaml:"log_format"`
-	WriteTimeout    string   `yaml:"write_timeout"`
+	Port               *int     `yaml:"port"`
+	Upstreams          []string `yaml:"upstreams"`
+	MutableTTL         string   `yaml:"mutable_ttl"`
+	MaxCacheEntries    *int     `yaml:"max_cache_entries"`
+	FinalityDepth      *uint64  `yaml:"finality_depth"`
+	HealthInterval     string   `yaml:"health_interval"`
+	ProbeTimeout       string   `yaml:"probe_timeout"`
+	LagThreshold       *uint64  `yaml:"lag_threshold"`
+	CacheBackend       string   `yaml:"cache_backend"`
+	RedisURL           string   `yaml:"redis_url"`
+	LogLevel           string   `yaml:"log_level"`
+	LogFormat          string   `yaml:"log_format"`
+	WriteTimeout       string   `yaml:"write_timeout"`
+	WSReplayPendingCap *int     `yaml:"ws_replay_pending_cap"`
 }
 
 // LoadFile reads a YAML config file and merges non-zero values into cfg.
@@ -154,6 +160,9 @@ func LoadFile(path string, cfg *Config) error {
 		}
 		cfg.WriteTimeout = d
 	}
+	if yc.WSReplayPendingCap != nil {
+		cfg.WSReplayPendingCap = *yc.WSReplayPendingCap
+	}
 
 	return nil
 }
@@ -175,6 +184,7 @@ func ApplyEnv(cfg *Config) {
 	envString("AEGIS_LOG_LEVEL", func(v string) { cfg.LogLevel = v })
 	envString("AEGIS_LOG_FORMAT", func(v string) { cfg.LogFormat = v })
 	envDuration("AEGIS_WRITE_TIMEOUT", func(v time.Duration) { cfg.WriteTimeout = v })
+	envInt("AEGIS_WS_REPLAY_PENDING_CAP", func(v int) { cfg.WSReplayPendingCap = v })
 }
 
 // envInt reads an environment variable as a base-10 integer.
@@ -285,6 +295,9 @@ func (c Config) Validate() error {
 	if c.WriteTimeout <= 0 {
 		return fmt.Errorf("write_timeout must be positive, got %s", c.WriteTimeout)
 	}
+	if c.WSReplayPendingCap <= 0 {
+		return fmt.Errorf("ws_replay_pending_cap must be positive, got %d", c.WSReplayPendingCap)
+	}
 	return nil
 }
 
@@ -309,6 +322,7 @@ func Parse() (Config, error) {
 	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error (env AEGIS_LOG_LEVEL)")
 	logFormat := flag.String("log-format", "text", "Log format: text or json (env AEGIS_LOG_FORMAT)")
 	writeTimeout := flag.Duration("write-timeout", 30*time.Second, "Maximum response write duration; raise for archive RPC (env AEGIS_WRITE_TIMEOUT)")
+	wsReplayCap := flag.Int("ws-replay-pending-cap", 1024, "Max upstream frames buffered during WS subscription replay (env AEGIS_WS_REPLAY_PENDING_CAP)")
 	flag.Parse()
 
 	// -- layer 1: defaults --------------------------------------------------
@@ -360,6 +374,8 @@ func Parse() (Config, error) {
 			cfg.LogFormat = *logFormat
 		case "write-timeout":
 			cfg.WriteTimeout = *writeTimeout
+		case "ws-replay-pending-cap":
+			cfg.WSReplayPendingCap = *wsReplayCap
 		}
 	})
 

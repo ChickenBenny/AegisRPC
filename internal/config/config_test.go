@@ -23,6 +23,7 @@ func TestDefault(t *testing.T) {
 	assert.Equal(t, "info", cfg.LogLevel)
 	assert.Equal(t, "text", cfg.LogFormat)
 	assert.Equal(t, 30*time.Second, cfg.WriteTimeout)
+	assert.Equal(t, 1024, cfg.WSReplayPendingCap)
 }
 
 func TestApplyEnv(t *testing.T) {
@@ -161,6 +162,18 @@ func TestValidate_ProbeTimeoutGEHealthInterval(t *testing.T) {
 
 	cfg.ProbeTimeout = cfg.HealthInterval + time.Second // greater → also invalid
 	assert.ErrorContains(t, cfg.Validate(), "probe_timeout")
+}
+
+func TestValidate_WSReplayPendingCap(t *testing.T) {
+	cfg := Default()
+	cfg.WSReplayPendingCap = 0
+	assert.ErrorContains(t, cfg.Validate(), "ws_replay_pending_cap")
+
+	cfg.WSReplayPendingCap = -1
+	assert.ErrorContains(t, cfg.Validate(), "ws_replay_pending_cap")
+
+	cfg.WSReplayPendingCap = 1
+	assert.NoError(t, cfg.Validate(), "any positive value is accepted")
 }
 
 func TestValidate_LogLevel(t *testing.T) {

@@ -41,6 +41,11 @@ type wsSession struct {
 	// Heartbeat timing. Defaults set by newWSSession; tests override for speed.
 	pingPeriod time.Duration // how often to send a Ping to the upstream
 	pongWait   time.Duration // how long to wait for the Pong before declaring the upstream dead
+
+	// replayPendingCap bounds how many upstream frames may be buffered
+	// during reconnect / subscription replay before the session starts
+	// dropping new arrivals (audit #5). 0 disables the safety net.
+	replayPendingCap int
 }
 
 // clientFrame is one WebSocket frame received from the client.
@@ -49,15 +54,16 @@ type clientFrame struct {
 	msg []byte
 }
 
-func newWSSession(pool *upstream.Pool, client *websocket.Conn) *wsSession {
+func newWSSession(pool *upstream.Pool, client *websocket.Conn, replayPendingCap int) *wsSession {
 	return &wsSession{
-		pool:       pool,
-		client:     client,
-		subs:       make(map[string]*subscription),
-		upToClient: make(map[string]string),
-		pending:    make(map[string]json.RawMessage),
-		pingPeriod: upstreamPingPeriod,
-		pongWait:   upstreamPongWait,
+		pool:             pool,
+		client:           client,
+		subs:             make(map[string]*subscription),
+		upToClient:       make(map[string]string),
+		pending:          make(map[string]json.RawMessage),
+		pingPeriod:       upstreamPingPeriod,
+		pongWait:         upstreamPongWait,
+		replayPendingCap: replayPendingCap,
 	}
 }
 
@@ -87,7 +93,10 @@ func (s *wsSession) writeToClient(mt int, msg []byte) error {
 
 // ServeWS returns an http.HandlerFunc that upgrades the connection to WebSocket
 // and runs a virtual session backed by the upstream pool.
-func ServeWS(pool *upstream.Pool) http.HandlerFunc {
+//
+// replayPendingCap bounds how many upstream frames each session may buffer
+// during the reconnect / subscription replay window (audit #5).
+func ServeWS(pool *upstream.Pool, replayPendingCap int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -95,7 +104,7 @@ func ServeWS(pool *upstream.Pool) http.HandlerFunc {
 			return
 		}
 		defer conn.Close()
-		newWSSession(pool, conn).run(r.Context())
+		newWSSession(pool, conn, replayPendingCap).run(r.Context())
 	}
 }
 
@@ -131,10 +140,18 @@ func (s *wsSession) run(ctx context.Context) {
 			return
 		}
 
-		if err := s.replaySubscriptions(up); err != nil {
+		pendingFrames, err := s.replaySubscriptions(up)
+		if err != nil {
 			slog.Warn("subscription replay failed", "err", err)
 			up.Close()
 			continue
+		}
+		// Flush frames that arrived during the replay window (audit #5).
+		for _, f := range pendingFrames {
+			if werr := s.forwardToClient(f.msg, f.mt); werr != nil {
+				up.Close()
+				return
+			}
 		}
 
 		clientLeft := s.pump(ctx, up, fromClient, clientGone)
@@ -169,13 +186,12 @@ func (s *wsSession) connectUpstream() (*websocket.Conn, error) {
 	return nil, fmt.Errorf("no reachable upstream")
 }
 
-// replaySubscriptions re-sends every known subscription to a fresh upstream connection
-// and updates the upstreamID mapping so that future notifications are remapped correctly.
-//
-// All subscribe requests are sent first, then responses are collected using a pending map.
-// This tolerates upstreams that push early eth_subscription notifications before the
-// subscribe response arrives (e.g. Erigon), and correctly handles out-of-order responses.
-func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
+// replaySubscriptions re-sends every known subscription to a fresh upstream
+// connection and updates the upstreamID mapping. Non-replay frames that
+// arrive during the window (real notifications, other responses) are
+// returned in the second slice so the caller can flush them to the client
+// before pump starts — pre-fix these were silently dropped (audit #5).
+func (s *wsSession) replaySubscriptions(up *websocket.Conn) ([]clientFrame, error) {
 	s.mu.Lock()
 	subs := make([]*subscription, 0, len(s.subs))
 	for _, sub := range s.subs {
@@ -184,7 +200,7 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 	s.mu.Unlock()
 
 	if len(subs) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	pendingReplay := make(map[string]*subscription, len(subs))
@@ -198,10 +214,10 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 			"params":  sub.subscribeParams,
 		})
 		if err != nil {
-			return fmt.Errorf("marshal replay for %s: %w", sub.clientID, err)
+			return nil, fmt.Errorf("marshal replay for %s: %w", sub.clientID, err)
 		}
 		if err := up.WriteMessage(websocket.TextMessage, req); err != nil {
-			return fmt.Errorf("write replay: %w", err)
+			return nil, fmt.Errorf("write replay: %w", err)
 		}
 		pendingReplay[replayID] = sub
 	}
@@ -210,10 +226,28 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 	up.SetReadDeadline(time.Now().Add(30 * time.Second))
 	defer up.SetReadDeadline(time.Time{})
 
+	var pendingFrames []clientFrame
+	var capWarned bool
+	stash := func(mt int, msg []byte) {
+		if s.replayPendingCap > 0 && len(pendingFrames) >= s.replayPendingCap {
+			if !capWarned {
+				slog.Warn("ws replay pending queue overflowed; dropping new frames",
+					"cap", s.replayPendingCap, "subscriptions", len(subs))
+				capWarned = true
+			}
+			return
+		}
+		// gorilla reuses the read buffer between calls, so the bytes must
+		// be copied before being held across iterations.
+		msgCopy := make([]byte, len(msg))
+		copy(msgCopy, msg)
+		pendingFrames = append(pendingFrames, clientFrame{mt: mt, msg: msgCopy})
+	}
+
 	for len(pendingReplay) > 0 {
-		_, msg, err := up.ReadMessage()
+		mt, msg, err := up.ReadMessage()
 		if err != nil {
-			return fmt.Errorf("read replay response: %w", err)
+			return pendingFrames, fmt.Errorf("read replay response: %w", err)
 		}
 
 		var resp struct {
@@ -222,24 +256,27 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 			Err    json.RawMessage `json:"error"`
 		}
 		if err := json.Unmarshal(msg, &resp); err != nil {
+			stash(mt, msg)
 			continue
 		}
 
 		// Match using the string ID we sent ("replay:<clientID>").
 		var idStr string
 		if json.Unmarshal(resp.ID, &idStr) != nil {
+			stash(mt, msg)
 			continue
 		}
 		sub, ok := pendingReplay[idStr]
 		if !ok {
+			stash(mt, msg)
 			continue
 		}
 
 		if len(resp.Err) > 0 && string(resp.Err) != "null" {
-			return fmt.Errorf("replay: upstream error for %s: %s", sub.clientID, resp.Err)
+			return pendingFrames, fmt.Errorf("replay: upstream error for %s: %s", sub.clientID, resp.Err)
 		}
 		if resp.Result == "" {
-			return fmt.Errorf("replay: unexpected response %s", msg)
+			return pendingFrames, fmt.Errorf("replay: unexpected response %s", msg)
 		}
 
 		s.mu.Lock()
@@ -249,7 +286,7 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) error {
 		s.mu.Unlock()
 		delete(pendingReplay, idStr)
 	}
-	return nil
+	return pendingFrames, nil
 }
 
 // pump bridges messages between the client (via fromClient channel) and the upstream (up).
