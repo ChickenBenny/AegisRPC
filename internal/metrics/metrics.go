@@ -140,6 +140,10 @@ var knownMethods = map[string]struct{}{
 	// "unknown" is the handler's parse-failure sentinel — kept separate
 	// from "other" so dashboards distinguish bad-JSON from bad-method.
 	"unknown": {},
+
+	// "batch" — JSON-RPC batch requests (uncached proxyDirect today).
+	// Per-item-aware metrics arrive with per-item caching (audit #30).
+	"batch": {},
 }
 
 // NormalizeMethod returns method if it appears in the known-methods

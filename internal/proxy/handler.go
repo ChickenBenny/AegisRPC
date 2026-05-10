@@ -25,6 +25,22 @@ type rateLimitedError struct{ retryAfter string }
 
 func (e *rateLimitedError) Error() string { return "upstream rate limited" }
 
+// negSentinel is stored under "neg::"+key on upstream failure. Only key
+// existence is checked, so the byte content is opaque on purpose — no
+// leak if a future refactor ever writes cached values back to clients.
+var negSentinel = []byte{0x01}
+
+// sfRet is the singleflight callback's return shape. Exactly one field is
+// populated:
+//   - result:   success — cached, then each caller rebuilds envelope with own id
+//   - rpcError: RPC-level error — forwarded with caller's id, never cached
+//   - rawBody:  non-JSON upstream — forwarded as-is (no id to splice)
+type sfRet struct {
+	result   json.RawMessage
+	rpcError *models.RPCError
+	rawBody  []byte
+}
+
 // Handler is an http.Handler that proxies JSON-RPC requests to upstream nodes
 // with integrated caching, singleflight coalescing, and finality-aware classification.
 type Handler struct {
@@ -66,6 +82,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Batch (JSON-RPC 2.0 §6) — forward as-is, uncached. Per-item caching
+	// is tracked as audit #30; this minimal path unblocks SDK BatchProvider
+	// users that the previous single-object Unmarshal rejected with 400.
+	if isBatch(body) {
+		method = "batch"
+		status = "uncacheable"
+		if err := h.proxyDirect(w, r, body, method); err != nil {
+			status = "error"
+		}
+		return
+	}
+
 	var req models.RPCRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		status = "error"
@@ -93,30 +121,57 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if cached, ok := h.cache.Get(key); ok {
+	if cachedResult, ok := h.cache.Get(key); ok {
 		metrics.CacheRequests.WithLabelValues("hit").Inc()
 		status = "cache_hit"
+		envelope, eerr := buildResultEnvelope(req.ID, cachedResult)
+		if eerr != nil {
+			// Should be unreachable — a value that survived being marshalled
+			// into the cache will round-trip through json.Marshal again.
+			status = "error"
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(cached)
+		w.Write(envelope)
 		return
 	}
 
 	metrics.CacheRequests.WithLabelValues("miss").Inc()
 	v, err, _ := h.sf.Do(key, func() (any, error) {
-		resp, err := h.fetchFromUpstream(r, body, req.Method)
-		if err != nil {
+		rawResp, ferr := h.fetchFromUpstream(r, body, req.Method)
+		if ferr != nil {
 			var rl *rateLimitedError
-			if !errors.As(err, &rl) {
-				h.cache.Set("neg::"+key, []byte(err.Error()), 1*time.Second)
+			if !errors.As(ferr, &rl) {
+				h.cache.Set("neg::"+key, negSentinel, 1*time.Second)
 			}
-			return nil, err
+			return nil, ferr
 		}
+
+		// Parse so we can skip caching RPC errors (audit #1) and cache
+		// only `result`, letting each caller rebuild envelope with own
+		// id (audit #2).
+		var parsed models.RPCResponse
+		if uerr := json.Unmarshal(rawResp, &parsed); uerr != nil {
+			// Non-JSON upstream — no id to splice in, forward as-is.
+			return sfRet{rawBody: rawResp}, nil
+		}
+		if parsed.Error != nil {
+			// Don't cache: transient errors must not poison the cache.
+			return sfRet{rpcError: parsed.Error}, nil
+		}
+		if len(parsed.Result) == 0 {
+			// Spec-violating upstream (no result, no error) — caching nil
+			// would permanently serve partial envelopes. Forward as-is.
+			return sfRet{rawBody: rawResp}, nil
+		}
+
 		ttl := time.Duration(0)
 		if layer == cache.LayerMutable {
 			ttl = h.mutableTTL
 		}
-		h.cache.Set(key, resp, ttl)
-		return resp, nil
+		h.cache.Set(key, parsed.Result, ttl)
+		return sfRet{result: parsed.Result}, nil
 	})
 	if err != nil {
 		var rl *rateLimitedError
@@ -132,10 +187,65 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	result := v.([]byte)
 
+	ret := v.(sfRet)
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(result)
+	switch {
+	case ret.rawBody != nil:
+		w.Write(ret.rawBody)
+	case ret.rpcError != nil:
+		envelope, eerr := buildErrorEnvelope(req.ID, ret.rpcError)
+		if eerr != nil {
+			status = "error"
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.Write(envelope)
+	default:
+		envelope, eerr := buildResultEnvelope(req.ID, ret.result)
+		if eerr != nil {
+			status = "error"
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		w.Write(envelope)
+	}
+}
+
+// buildResultEnvelope renders a JSON-RPC success response. id is spliced
+// verbatim (json.RawMessage) so precision survives the round-trip.
+func buildResultEnvelope(id, result json.RawMessage) ([]byte, error) {
+	return json.Marshal(models.RPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result:  result,
+	})
+}
+
+// buildErrorEnvelope renders a JSON-RPC error response with the caller's
+// id and the upstream-reported error object.
+func buildErrorEnvelope(id json.RawMessage, e *models.RPCError) ([]byte, error) {
+	return json.Marshal(models.RPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error:   e,
+	})
+}
+
+// isBatch reports whether the body starts with "[" (JSON-RPC 2.0 batch),
+// skipping any leading whitespace per RFC 8259.
+func isBatch(body []byte) bool {
+	for _, b := range body {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '[':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // proxyDirect forwards the request to the upstream without any caching.
