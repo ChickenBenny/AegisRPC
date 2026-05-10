@@ -160,6 +160,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Don't cache: transient errors must not poison the cache.
 			return sfRet{rpcError: parsed.Error}, nil
 		}
+		if len(parsed.Result) == 0 {
+			// Spec-violating upstream (no result, no error) — caching nil
+			// would permanently serve partial envelopes. Forward as-is.
+			return sfRet{rawBody: rawResp}, nil
+		}
 
 		ttl := time.Duration(0)
 		if layer == cache.LayerMutable {

@@ -243,6 +243,30 @@ func TestHandler_RPCError_NotCached(t *testing.T) {
 		"RPC error responses must not be cached; each call should hit upstream")
 }
 
+// TestHandler_MalformedUpstream_NotCached: a spec-violating upstream
+// returning valid JSON without result or error must not poison the
+// cache. Each call must hit upstream (PR #20 review).
+func TestHandler_MalformedUpstream_NotCached(t *testing.T) {
+	var callCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		// Valid envelope shape but neither result nor error (spec violation).
+		w.Write([]byte(`{"jsonrpc":"2.0","id":1}`))
+	}))
+	defer srv.Close()
+
+	h := newHandler(t, srv.URL, 5*time.Second)
+
+	for i := 0; i < 3; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, rpcRequest("eth_getTransactionByHash", `["0xabc"]`))
+		require.Equal(t, http.StatusOK, rec.Code, "iteration %d", i)
+	}
+
+	assert.Equal(t, int32(3), callCount.Load(),
+		"malformed upstream responses must not be cached as nil result")
+}
+
 // ---------------------------------------------------------------------------
 // audit #2 — request id must round-trip byte-exact, even across cache hits
 // and across concurrent coalesced callers.
