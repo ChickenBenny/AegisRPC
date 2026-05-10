@@ -376,7 +376,9 @@ func TestHandler_NegativeCache_UsesSentinel(t *testing.T) {
 		rpcParams(`["0xabc"]`))
 	val, ok := h.cache.Get(key)
 	require.True(t, ok, "negative cache entry must exist after upstream failure")
-	assert.Equal(t, negSentinel, val,
+	// Compare against a literal, not negSentinel — that would silently
+	// pass if a bug mutated the underlying slice.
+	assert.Equal(t, []byte{0x01}, val,
 		"negative cache must store the opaque sentinel, not the upstream error message")
 }
 
