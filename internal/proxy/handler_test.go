@@ -267,6 +267,26 @@ func TestHandler_MalformedUpstream_NotCached(t *testing.T) {
 		"malformed upstream responses must not be cached as nil result")
 }
 
+// TestHandler_RPCError_DataPreserved: error.data must round-trip
+// byte-exact (PR #20 review). Pre-fix, interface{} rounded
+// 9007199254740993 to ...992 via float64.
+func TestHandler_RPCError_DataPreserved(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"x","data":9007199254740993}}`))
+	}))
+	defer srv.Close()
+
+	h := newHandler(t, srv.URL, 5*time.Second)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, rpcRequest("eth_call", `[]`))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "9007199254740993",
+		"error.data must be preserved byte-exact (no float64 rounding)")
+	assert.NotContains(t, rec.Body.String(), "9007199254740992",
+		"the float64-rounded form must not appear")
+}
+
 // ---------------------------------------------------------------------------
 // audit #2 — request id must round-trip byte-exact, even across cache hits
 // and across concurrent coalesced callers.

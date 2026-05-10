@@ -23,8 +23,11 @@ type RPCResponse struct {
 }
 
 // RPCError represents the error object in a JSON-RPC 2.0 response.
+//
+// Data uses json.RawMessage for the same reason ID does — interface{}
+// loses precision for integers >2^53 and normalises decimals.
 type RPCError struct {
-	Code    int         `json:"code"`
-	Message string      `json:"message"`
-	Data    interface{} `json:"data,omitempty"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
