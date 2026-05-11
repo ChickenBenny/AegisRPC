@@ -1,11 +1,14 @@
 package upstream
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ChickenBenny/AegisRPC/internal/capability"
 )
@@ -97,6 +100,69 @@ func NewPool(urls []string) (*Pool, error) {
 // Callers must not modify the returned slice.
 func (p *Pool) Nodes() []*Upstream {
 	return p.nodes
+}
+
+// ProbeCapabilities runs prober.Probe against every node in parallel and
+// OR-merges the result into each node's capabilities. Annotation acts as
+// a floor: probes can only add capabilities, never remove them. The ctx
+// bounds the wall-clock budget for the whole batch — nodes whose probe
+// does not complete in time keep their pre-probe capabilities and the
+// outcome is logged.
+//
+// This is intentionally fire-and-wait: callers run it during startup
+// before opening the listener so the routing surface is stable when
+// the first request arrives.
+func (p *Pool) ProbeCapabilities(ctx context.Context, prober capability.Prober) {
+	if len(p.nodes) == 0 {
+		return
+	}
+
+	start := time.Now()
+	var enriched, failed atomic.Uint64
+	var wg sync.WaitGroup
+
+	for _, node := range p.nodes {
+		wg.Add(1)
+		go func(node *Upstream) {
+			defer wg.Done()
+			existing := node.Capabilities()
+			probed, err := prober.Probe(ctx, node.URL.String())
+			if err != nil {
+				slog.Warn("capability probe failed", "node", node.URL.String(), "err", err)
+				failed.Add(1)
+				return
+			}
+			merged := existing | probed
+			if merged != existing {
+				node.SetCapabilities(merged)
+				enriched.Add(1)
+			}
+			slog.Info("capability probe complete",
+				"node", node.URL.String(),
+				"annotated", existing.String(),
+				"probed", probed.String(),
+				"effective", merged.String())
+		}(node)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		slog.Warn("capability probe deadline exceeded; some nodes kept pre-probe caps",
+			"err", ctx.Err())
+	}
+
+	slog.Info("capability probe summary",
+		"duration", time.Since(start),
+		"total", len(p.nodes),
+		"enriched", enriched.Load(),
+		"failed", failed.Load())
 }
 
 // Next returns the first healthy upstream, or nil if none available.

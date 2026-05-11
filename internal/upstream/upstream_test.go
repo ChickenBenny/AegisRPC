@@ -1,12 +1,47 @@
 package upstream
 
 import (
+	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ChickenBenny/AegisRPC/internal/capability"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// stubProber returns a canned capability per URL. If the URL is not in the
+// map, Probe returns CapBasic alone (mirrors EthProber behaviour for an
+// uncooperative upstream).
+type stubProber struct {
+	mu        sync.Mutex
+	results   map[string]capability.Capability
+	errors    map[string]error
+	delay     time.Duration
+	callCount atomic.Int64
+}
+
+func (s *stubProber) Probe(ctx context.Context, nodeURL string) (capability.Capability, error) {
+	s.callCount.Add(1)
+	if s.delay > 0 {
+		select {
+		case <-ctx.Done():
+			return capability.CapBasic, ctx.Err()
+		case <-time.After(s.delay):
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err, ok := s.errors[nodeURL]; ok {
+		return capability.CapBasic, err
+	}
+	if caps, ok := s.results[nodeURL]; ok {
+		return caps, nil
+	}
+	return capability.CapBasic, nil
+}
 
 func TestPoolNext_AllHealthy(t *testing.T) {
 	pool, err := NewPool([]string{
@@ -270,3 +305,117 @@ func TestNewPool_InvalidAnnotation_ReturnsError(t *testing.T) {
 	_, err := NewPool([]string{"https://node.example.com[bad_cap]"})
 	require.Error(t, err)
 }
+
+func TestPool_ProbeCapabilities_ORMergesIntoExistingCaps(t *testing.T) {
+	pool, err := NewPool([]string{
+		"https://archive.example.com[basic,historical]",
+		"https://plain.example.com",
+	})
+	require.NoError(t, err)
+
+	prober := &stubProber{
+		results: map[string]capability.Capability{
+			"https://archive.example.com": capability.CapBasic | capability.CapDebug,
+			"https://plain.example.com":   capability.CapBasic | capability.CapHistorical | capability.CapDebug,
+		},
+	}
+	pool.ProbeCapabilities(context.Background(), prober)
+
+	nodes := pool.Nodes()
+	// archive: annotation gave basic+historical, probe added debug → union.
+	assert.True(t, nodes[0].Capabilities().Has(capability.CapHistorical), "annotation must be preserved")
+	assert.True(t, nodes[0].Capabilities().Has(capability.CapDebug), "probe additions must be applied")
+	// plain: started with just CapBasic, probe enriches to historical+debug.
+	assert.True(t, nodes[1].Capabilities().Has(capability.CapHistorical))
+	assert.True(t, nodes[1].Capabilities().Has(capability.CapDebug))
+}
+
+// Annotation is a floor: even if probe omits a capability the operator
+// declared, that capability stays.
+func TestPool_ProbeCapabilities_AnnotationIsFloor(t *testing.T) {
+	pool, err := NewPool([]string{
+		"https://archive.example.com[basic,historical]",
+	})
+	require.NoError(t, err)
+
+	prober := &stubProber{
+		results: map[string]capability.Capability{
+			"https://archive.example.com": capability.CapBasic, // probe failed to confirm historical
+		},
+	}
+	pool.ProbeCapabilities(context.Background(), prober)
+
+	caps := pool.Nodes()[0].Capabilities()
+	assert.True(t, caps.Has(capability.CapHistorical),
+		"annotation declared historical; probe disagreement must not downgrade")
+}
+
+// Probes run in parallel, not sequentially. Three nodes × 200ms each should
+// complete in well under 600ms when run concurrently.
+func TestPool_ProbeCapabilities_Parallel(t *testing.T) {
+	pool, err := NewPool([]string{
+		"https://a.example.com",
+		"https://b.example.com",
+		"https://c.example.com",
+	})
+	require.NoError(t, err)
+
+	prober := &stubProber{delay: 200 * time.Millisecond}
+	start := time.Now()
+	pool.ProbeCapabilities(context.Background(), prober)
+	elapsed := time.Since(start)
+
+	assert.Less(t, elapsed, 500*time.Millisecond, "probes must run concurrently")
+	assert.Equal(t, int64(3), prober.callCount.Load())
+}
+
+// Per-node probe error leaves that node's caps untouched but does not
+// affect other nodes.
+func TestPool_ProbeCapabilities_PerNodeFailureIsolated(t *testing.T) {
+	pool, err := NewPool([]string{
+		"https://good.example.com",
+		"https://bad.example.com[basic,debug]",
+	})
+	require.NoError(t, err)
+
+	prober := &stubProber{
+		results: map[string]capability.Capability{
+			"https://good.example.com": capability.CapBasic | capability.CapHistorical,
+		},
+		errors: map[string]error{
+			"https://bad.example.com": assertError("synthetic probe failure"),
+		},
+	}
+	pool.ProbeCapabilities(context.Background(), prober)
+
+	good := pool.Nodes()[0].Capabilities()
+	bad := pool.Nodes()[1].Capabilities()
+
+	assert.True(t, good.Has(capability.CapHistorical), "good node still gets enriched")
+	assert.True(t, bad.Has(capability.CapDebug), "bad node keeps its annotation despite probe error")
+	assert.False(t, bad.Has(capability.CapHistorical), "probe never claimed historical for bad node")
+}
+
+// ProbeCapabilities returns when the ctx deadline fires, even if individual
+// probes are slower. Late results that arrive after deadline must not
+// extend the wall-clock cost for the caller.
+func TestPool_ProbeCapabilities_ContextDeadlineBounds(t *testing.T) {
+	pool, err := NewPool([]string{"https://slow.example.com"})
+	require.NoError(t, err)
+
+	prober := &stubProber{delay: 2 * time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	pool.ProbeCapabilities(ctx, prober)
+	elapsed := time.Since(start)
+
+	assert.Less(t, elapsed, 500*time.Millisecond, "must honour ctx deadline")
+}
+
+// Test-helper error type.
+type stringError string
+
+func (e stringError) Error() string { return string(e) }
+func assertError(s string) error    { return stringError(s) }
