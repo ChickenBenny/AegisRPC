@@ -67,7 +67,8 @@ type wsSession struct {
 
 	// replayPendingCap bounds how many upstream frames may be buffered
 	// during reconnect / subscription replay before the session starts
-	// dropping new arrivals (audit #5). 0 disables the safety net.
+	// dropping new arrivals (audit #5). Must be > 0; config.Validate
+	// rejects non-positive values to prevent an unbounded queue.
 	replayPendingCap int
 }
 
@@ -255,7 +256,7 @@ func (s *wsSession) replaySubscriptions(up *websocket.Conn) ([]clientFrame, erro
 	var pendingFrames []clientFrame
 	var capWarned bool
 	stash := func(mt int, msg []byte) {
-		if s.replayPendingCap > 0 && len(pendingFrames) >= s.replayPendingCap {
+		if len(pendingFrames) >= s.replayPendingCap {
 			if !capWarned {
 				slog.Warn("ws replay pending queue overflowed; dropping new frames",
 					"cap", s.replayPendingCap, "subscriptions", len(subs))
