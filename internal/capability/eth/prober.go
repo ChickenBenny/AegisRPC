@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/ChickenBenny/AegisRPC/internal/capability"
 )
@@ -18,10 +17,13 @@ type EthProber struct {
 	client *http.Client
 }
 
+// NewEthProber returns a prober that defers deadline management to the
+// caller's context. Audit #27: a hardcoded http.Client.Timeout fought with
+// the caller-supplied context (a 30s probe ctx was getting silently
+// truncated to 10s) and made the bounded-deadline guarantee in
+// Pool.ProbeCapabilities unreliable.
 func NewEthProber() *EthProber {
-	return &EthProber{
-		client: &http.Client{Timeout: 10 * time.Second},
-	}
+	return &EthProber{client: &http.Client{}}
 }
 
 // probeResult is the per-namespace outcome of a single capability check.
