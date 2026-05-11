@@ -128,7 +128,7 @@ func TestMakeUpgrader_EmptyAllowlist_AllowsAll(t *testing.T) {
 	}
 }
 
-func TestMakeUpgrader_NonEmptyAllowlist_ExactMatchOnly(t *testing.T) {
+func TestMakeUpgrader_NonEmptyAllowlist_NormalisedMatch(t *testing.T) {
 	up := makeUpgrader([]string{"https://app.example.com", "https://other.example.com"})
 	cases := []struct {
 		origin string
@@ -136,15 +136,36 @@ func TestMakeUpgrader_NonEmptyAllowlist_ExactMatchOnly(t *testing.T) {
 	}{
 		{"https://app.example.com", true},
 		{"https://other.example.com", true},
+		{"https://app.example.com/", true},      // trailing slash normalised away
+		{"https://app.example.com:443", true},   // default port normalised away
+		{"https://APP.example.COM", true},       // host case normalised
 		{"https://evil.example.com", false},
-		{"http://app.example.com", false},  // scheme differs
-		{"https://app.example.com:443", false}, // explicit port differs
+		{"http://app.example.com", false},       // scheme differs
+		{"https://app.example.com:8443", false}, // non-default port differs
 		{"", false},
 	}
 	for _, tc := range cases {
 		req := httptest.NewRequest(http.MethodGet, "/ws", nil)
 		req.Header.Set("Origin", tc.origin)
 		assert.Equal(t, tc.want, up.CheckOrigin(req), "origin=%q", tc.origin)
+	}
+}
+
+func TestNormaliseOrigin(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"https://app.example.com", "https://app.example.com"},
+		{"https://app.example.com/", "https://app.example.com"},
+		{"https://app.example.com:443", "https://app.example.com"},
+		{"http://app.example.com:80", "http://app.example.com"},
+		{"https://app.example.com:8443", "https://app.example.com:8443"},
+		{"HTTPS://APP.EXAMPLE.COM", "https://app.example.com"},
+		{" https://app.example.com ", "https://app.example.com"},
+		{"", ""},
+		{"not a url", ""},
+		{"https://", ""},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, normaliseOrigin(tc.in), "input=%q", tc.in)
 	}
 }
 

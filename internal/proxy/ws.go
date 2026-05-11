@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -22,24 +23,57 @@ var upgrader = websocket.Upgrader{
 }
 
 // makeUpgrader builds an Upgrader whose CheckOrigin permits only the listed
-// origins (exact byte match on the Origin header). Empty list = allow-all
+// origins. Allowlist entries and incoming Origin headers are normalised to
+// scheme://host[:port] (lowercased host, default ports dropped, trailing
+// slash dropped) so configuration like "https://app.example.com/" still
+// matches a browser-sent "https://app.example.com". Empty list = allow-all
 // for backward compat; production should set AEGIS_WS_ALLOWED_ORIGINS to
 // defend against cross-site WebSocket hijacking.
 func makeUpgrader(allowedOrigins []string) websocket.Upgrader {
+	normalised := make(map[string]struct{}, len(allowedOrigins))
+	for _, a := range allowedOrigins {
+		if n := normaliseOrigin(a); n != "" {
+			normalised[n] = struct{}{}
+		}
+	}
 	return websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
-			if len(allowedOrigins) == 0 {
+			if len(normalised) == 0 {
 				return true
 			}
-			origin := r.Header.Get("Origin")
-			for _, a := range allowedOrigins {
-				if a == origin {
-					return true
-				}
+			origin := normaliseOrigin(r.Header.Get("Origin"))
+			if origin == "" {
+				return false
 			}
-			return false
+			_, ok := normalised[origin]
+			return ok
 		},
 	}
+}
+
+// normaliseOrigin reduces an Origin header (or allowlist entry) to its
+// RFC 6454 canonical form: scheme://host[:port], lowercase host, default
+// port (80/443) dropped, trailing slash dropped. Returns "" if the input
+// cannot be parsed or lacks scheme/host.
+func normaliseOrigin(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		port = ""
+	}
+	if port != "" {
+		return scheme + "://" + host + ":" + port
+	}
+	return scheme + "://" + host
 }
 
 // subscription tracks one active eth_subscribe registration.

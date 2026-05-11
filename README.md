@@ -47,7 +47,7 @@ CLI flags  >  Environment variables  >  YAML config file  >  Built-in defaults
 | `AEGIS_LOG_FORMAT` | `text` | Log encoding: `text` (human-readable `key=value`) or `json` (one JSON object per line, suited for ELK / Loki / Datadog). |
 | `AEGIS_WRITE_TIMEOUT` | `30s` | Maximum response write duration. Default suits wallet/dApp traffic; archive deployments serving wide-range `eth_getLogs` or `debug_trace*` typically need `120s` or higher to avoid mid-response connection resets. |
 | `AEGIS_WS_REPLAY_PENDING_CAP` | `1024` | Per-WS-session cap on upstream frames buffered during the reconnect / subscription replay window. Indexer deployments listening on heavy-traffic contracts (Uniswap-class) may want to raise this. |
-| `AEGIS_WS_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated exact-match allowlist for the WebSocket upgrade `Origin` header. Empty = allow-all (backward compat). Production deployments behind a browser-facing UI **must** populate this with every trusted origin (`scheme://host[:port]`) to defend against cross-site WebSocket hijacking. |
+| `AEGIS_WS_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated allowlist for the WebSocket upgrade `Origin` header. Both list entries and incoming headers are normalised to `scheme://host[:port]` (host lowercased, default ports 80/443 dropped, trailing slash dropped) before comparison. Empty = allow-all (backward compat). Production deployments behind a browser-facing UI **must** populate this with every trusted origin to defend against cross-site WebSocket hijacking. |
 
 Duration values accept Go duration strings: `5s`, `1m`, `500ms`, etc.
 
