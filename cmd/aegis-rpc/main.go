@@ -67,7 +67,7 @@ func main() {
 	rtr := router.New(pool)
 	h := proxy.NewHandler(rtr, store, cfg.MutableTTL, fc)
 
-	srv := httpapi.New(cfg.Port, cfg.WriteTimeout, h, pool)
+	srv := httpapi.New(cfg.Port, cfg.WriteTimeout, cfg.WSReplayPendingCap, cfg.WSAllowedOrigins, h, pool)
 
 	go func() {
 		slog.Info("server started",

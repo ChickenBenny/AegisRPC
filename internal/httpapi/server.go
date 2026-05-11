@@ -34,7 +34,12 @@ type Server struct {
 // writeTimeout sets http.Server.WriteTimeout. Archive deployments serving
 // wide-range eth_getLogs / debug_trace* should pass a generous value
 // (120s+); the default 30s is safe for wallet/dApp traffic.
-func New(port int, writeTimeout time.Duration, handler *proxy.Handler, pool *upstream.Pool) *Server {
+//
+// wsReplayPendingCap caps how many upstream frames each WS session may
+// buffer during reconnect / subscription replay (see audit #5).
+// wsAllowedOrigins is the WS upgrade origin allowlist; empty = allow all
+// (audit #15).
+func New(port int, writeTimeout time.Duration, wsReplayPendingCap int, wsAllowedOrigins []string, handler *proxy.Handler, pool *upstream.Pool) *Server {
 	s := &Server{}
 
 	mux := http.NewServeMux()
@@ -45,7 +50,7 @@ func New(port int, writeTimeout time.Duration, handler *proxy.Handler, pool *ups
 		}
 		handler.ServeHTTP(w, r)
 	})
-	mux.HandleFunc("/ws", proxy.ServeWS(pool))
+	mux.HandleFunc("/ws", proxy.ServeWS(pool, wsReplayPendingCap, wsAllowedOrigins))
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/healthz", s.healthz)
 

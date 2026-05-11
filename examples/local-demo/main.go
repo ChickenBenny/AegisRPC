@@ -178,7 +178,7 @@ func main() {
 
 	// ── start AegisRPC proxy ─────────────────────────────────────────────────
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", proxy.ServeWS(pool))
+	mux.HandleFunc("/ws", proxy.ServeWS(pool, 1024, nil))
 	// also expose a plain HTTP ping so curl can confirm the server is up
 	mux.HandleFunc("/ping", func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("pong\n"))
