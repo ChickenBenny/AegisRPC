@@ -121,13 +121,20 @@ func (p *EthProber) probeHistorical(ctx context.Context, nodeURL string) probeRe
 	return probeUnknown
 }
 
-// probeDebug checks if the node supports the debug_* namespace (Geth).
-func (p *EthProber) probeDebug(ctx context.Context, nodeURL string) probeResult {
-	body, err := p.sendRPCRequest(ctx, nodeURL, "debug_traceBlockByNumber", []interface{}{
-		"latest", map[string]interface{}{},
-	})
+// probeNamespace checks if a method is registered on the upstream by calling
+// it with intentionally empty params. JSON-RPC servers resolve the method
+// name *before* unmarshalling params, so the only two outcomes we care about
+// are -32601 (method not found → namespace disabled) and -32602 (invalid
+// params → method exists, namespace enabled). Anything else (rate limit,
+// auth, transient 5xx) is ambiguous.
+//
+// This avoids the audit #11 footgun of probing with debug_traceBlockByNumber
+// ("latest", {}), which actually traces every transaction in the latest block
+// and is reliably rate-limited on public RPC providers.
+func (p *EthProber) probeNamespace(ctx context.Context, nodeURL, namespace, method string) probeResult {
+	body, err := p.sendRPCRequest(ctx, nodeURL, method, []interface{}{})
 	if err != nil {
-		slog.Warn("capability probe transport error", "namespace", "debug", "node", nodeURL, "err", err)
+		slog.Warn("capability probe transport error", "namespace", namespace, "node", nodeURL, "err", err)
 		return probeUnknown
 	}
 
@@ -138,45 +145,33 @@ func (p *EthProber) probeDebug(ctx context.Context, nodeURL string) probeResult 
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		slog.Warn("capability probe parse error", "namespace", "debug", "node", nodeURL, "err", err)
+		slog.Warn("capability probe parse error", "namespace", namespace, "node", nodeURL, "err", err)
 		return probeUnknown
 	}
 
-	if resp.Error != nil {
-		if resp.Error.Code == -32601 {
-			return probeNo
-		}
-		slog.Warn("capability probe ambiguous", "namespace", "debug", "node", nodeURL, "code", resp.Error.Code, "msg", resp.Error.Message)
-		return probeUnknown
+	if resp.Error == nil {
+		// Some servers tolerate empty params and return a successful result
+		// (e.g. trace_block defaulting to latest). Still a positive signal.
+		return probeYes
 	}
-	return probeYes
+	switch resp.Error.Code {
+	case -32601:
+		return probeNo
+	case -32602, -32600:
+		// Invalid params / invalid request — method dispatched, framework
+		// rejected our payload. Namespace is enabled.
+		return probeYes
+	}
+	slog.Warn("capability probe ambiguous", "namespace", namespace, "node", nodeURL, "code", resp.Error.Code, "msg", resp.Error.Message)
+	return probeUnknown
+}
+
+// probeDebug checks if the node supports the debug_* namespace (Geth).
+func (p *EthProber) probeDebug(ctx context.Context, nodeURL string) probeResult {
+	return p.probeNamespace(ctx, nodeURL, "debug", "debug_traceTransaction")
 }
 
 // probeTrace checks if the node supports the trace_* namespace (Erigon / Nethermind).
 func (p *EthProber) probeTrace(ctx context.Context, nodeURL string) probeResult {
-	body, err := p.sendRPCRequest(ctx, nodeURL, "trace_block", []interface{}{"latest"})
-	if err != nil {
-		slog.Warn("capability probe transport error", "namespace", "trace", "node", nodeURL, "err", err)
-		return probeUnknown
-	}
-
-	var resp struct {
-		Error *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		slog.Warn("capability probe parse error", "namespace", "trace", "node", nodeURL, "err", err)
-		return probeUnknown
-	}
-
-	if resp.Error != nil {
-		if resp.Error.Code == -32601 {
-			return probeNo
-		}
-		slog.Warn("capability probe ambiguous", "namespace", "trace", "node", nodeURL, "code", resp.Error.Code, "msg", resp.Error.Message)
-		return probeUnknown
-	}
-	return probeYes
+	return p.probeNamespace(ctx, nodeURL, "trace", "trace_transaction")
 }

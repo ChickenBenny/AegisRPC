@@ -100,6 +100,33 @@ func TestEthProber_ArchiveNode(t *testing.T) {
 	assert.False(t, caps.Has(capability.CapDebug))
 }
 
+// -32602 (invalid params) means the method exists and dispatched, just hated
+// the empty params — confirms namespace is enabled. Audit #11.
+func TestEthProber_InvalidParamsMeansNamespaceEnabled(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		switch callCount {
+		case 1: // historical → archive
+			w.Write([]byte(`{"jsonrpc":"2.0","result":"0x1","id":1}`))
+		case 2: // debug → invalid params (method exists)
+			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32602,"message":"missing value for required argument 0"},"id":1}`))
+		default: // trace → invalid params (method exists)
+			w.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32602,"message":"missing required argument 0"},"id":1}`))
+		}
+	}))
+	defer server.Close()
+
+	prober := NewEthProber()
+	caps, err := prober.Probe(context.Background(), server.URL)
+
+	require.NoError(t, err)
+	assert.True(t, caps.Has(capability.CapBasic))
+	assert.True(t, caps.Has(capability.CapHistorical))
+	assert.True(t, caps.Has(capability.CapDebug), "-32602 should be read as namespace enabled")
+	assert.True(t, caps.Has(capability.CapTrace), "-32602 should be read as namespace enabled")
+}
+
 func TestEthProber_FullDebugNode(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
