@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -23,33 +24,33 @@ func NewEthProber() *EthProber {
 	}
 }
 
+// probeResult is the per-namespace outcome of a single capability check.
+// "unknown" lets one namespace fail (rate limit, auth, transient 5xx) without
+// poisoning the result for the rest — audit #10.
+type probeResult int
+
+const (
+	probeUnknown probeResult = iota // ambiguous error; treat as not-supported but keep probing siblings
+	probeNo                         // confirmed unsupported
+	probeYes                        // confirmed supported
+)
+
+// Probe returns the union of capabilities confirmed by per-namespace probes.
+// Per-namespace failures degrade to probeUnknown locally and are logged; they
+// no longer drop sibling results. The error return is reserved for catastrophic
+// setup failures (e.g. malformed URL) where no probe could even start.
 func (p *EthProber) Probe(ctx context.Context, nodeURL string) (capability.Capability, error) {
 	caps := capability.CapBasic
 
-	historical, err := p.probeHistorical(ctx, nodeURL)
-	if err != nil {
-		return 0, err
-	}
-	if historical {
+	if p.probeHistorical(ctx, nodeURL) == probeYes {
 		caps |= capability.CapHistorical
 	}
-
-	debug, err := p.probeDebug(ctx, nodeURL)
-	if err != nil {
-		return 0, err
-	}
-	if debug {
+	if p.probeDebug(ctx, nodeURL) == probeYes {
 		caps |= capability.CapDebug
 	}
-
-	trace, err := p.probeTrace(ctx, nodeURL)
-	if err != nil {
-		return 0, err
-	}
-	if trace {
+	if p.probeTrace(ctx, nodeURL) == probeYes {
 		caps |= capability.CapTrace
 	}
-
 	return caps, nil
 }
 
@@ -86,7 +87,7 @@ func (p *EthProber) sendRPCRequest(ctx context.Context, nodeURL string, method s
 	return body, nil
 }
 
-func (p *EthProber) probeHistorical(ctx context.Context, nodeURL string) (bool, error) {
+func (p *EthProber) probeHistorical(ctx context.Context, nodeURL string) probeResult {
 	// Zero address at block 1: widely available on all mainnet-compatible chains,
 	// guaranteed to have a trie entry on archive nodes but absent on pruned nodes.
 	body, err := p.sendRPCRequest(ctx, nodeURL, "eth_getBalance", []interface{}{
@@ -94,7 +95,8 @@ func (p *EthProber) probeHistorical(ctx context.Context, nodeURL string) (bool, 
 		"0x1",
 	})
 	if err != nil {
-		return false, err
+		slog.Warn("capability probe transport error", "namespace", "historical", "node", nodeURL, "err", err)
+		return probeUnknown
 	}
 
 	var resp struct {
@@ -103,29 +105,30 @@ func (p *EthProber) probeHistorical(ctx context.Context, nodeURL string) (bool, 
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return false, err
+		slog.Warn("capability probe parse error", "namespace", "historical", "node", nodeURL, "err", err)
+		return probeUnknown
 	}
 
 	if resp.Error == nil {
-		return true, nil
+		return probeYes
 	}
-
-	// Only "missing trie node" confirms a pruned (non-archive) node.
-	// Any other error is ambiguous — surface it to the caller.
 	if strings.Contains(resp.Error.Message, "missing trie node") {
-		return false, nil
+		return probeNo
 	}
-
-	return false, fmt.Errorf("probeHistorical: unexpected RPC error: %s", resp.Error.Message)
+	// Ambiguous (rate limit, auth, 5xx surfaced as RPC error). Treat as unknown
+	// so siblings can still record their results — audit #10.
+	slog.Warn("capability probe ambiguous", "namespace", "historical", "node", nodeURL, "msg", resp.Error.Message)
+	return probeUnknown
 }
 
 // probeDebug checks if the node supports the debug_* namespace (Geth).
-func (p *EthProber) probeDebug(ctx context.Context, nodeURL string) (bool, error) {
+func (p *EthProber) probeDebug(ctx context.Context, nodeURL string) probeResult {
 	body, err := p.sendRPCRequest(ctx, nodeURL, "debug_traceBlockByNumber", []interface{}{
 		"latest", map[string]interface{}{},
 	})
 	if err != nil {
-		return false, err
+		slog.Warn("capability probe transport error", "namespace", "debug", "node", nodeURL, "err", err)
+		return probeUnknown
 	}
 
 	var resp struct {
@@ -135,25 +138,26 @@ func (p *EthProber) probeDebug(ctx context.Context, nodeURL string) (bool, error
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return false, err
+		slog.Warn("capability probe parse error", "namespace", "debug", "node", nodeURL, "err", err)
+		return probeUnknown
 	}
 
-	// -32601 means "method not found" — the namespace is simply not enabled.
-	// Any other error (rate limit, auth, server fault) is ambiguous — surface it.
 	if resp.Error != nil {
 		if resp.Error.Code == -32601 {
-			return false, nil
+			return probeNo
 		}
-		return false, fmt.Errorf("probeDebug: unexpected RPC error %d: %s", resp.Error.Code, resp.Error.Message)
+		slog.Warn("capability probe ambiguous", "namespace", "debug", "node", nodeURL, "code", resp.Error.Code, "msg", resp.Error.Message)
+		return probeUnknown
 	}
-	return true, nil
+	return probeYes
 }
 
 // probeTrace checks if the node supports the trace_* namespace (Erigon / Nethermind).
-func (p *EthProber) probeTrace(ctx context.Context, nodeURL string) (bool, error) {
+func (p *EthProber) probeTrace(ctx context.Context, nodeURL string) probeResult {
 	body, err := p.sendRPCRequest(ctx, nodeURL, "trace_block", []interface{}{"latest"})
 	if err != nil {
-		return false, err
+		slog.Warn("capability probe transport error", "namespace", "trace", "node", nodeURL, "err", err)
+		return probeUnknown
 	}
 
 	var resp struct {
@@ -163,16 +167,16 @@ func (p *EthProber) probeTrace(ctx context.Context, nodeURL string) (bool, error
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return false, err
+		slog.Warn("capability probe parse error", "namespace", "trace", "node", nodeURL, "err", err)
+		return probeUnknown
 	}
 
-	// -32601 means "method not found" — the namespace is simply not enabled.
-	// Any other error (rate limit, auth, server fault) is ambiguous — surface it.
 	if resp.Error != nil {
 		if resp.Error.Code == -32601 {
-			return false, nil
+			return probeNo
 		}
-		return false, fmt.Errorf("probeTrace: unexpected RPC error %d: %s", resp.Error.Code, resp.Error.Message)
+		slog.Warn("capability probe ambiguous", "namespace", "trace", "node", nodeURL, "code", resp.Error.Code, "msg", resp.Error.Message)
+		return probeUnknown
 	}
-	return true, nil
+	return probeYes
 }
