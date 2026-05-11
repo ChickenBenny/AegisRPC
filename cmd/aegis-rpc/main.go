@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ChickenBenny/AegisRPC/internal/cache"
+	ethprober "github.com/ChickenBenny/AegisRPC/internal/capability/eth"
 	"github.com/ChickenBenny/AegisRPC/internal/config"
 	"github.com/ChickenBenny/AegisRPC/internal/httpapi"
 	"github.com/ChickenBenny/AegisRPC/internal/proxy"
@@ -49,6 +50,15 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Bounded capability probe — runs every upstream concurrently with a
+	// wall-clock cap of 2× ProbeTimeout. Probe results OR-merge into URL
+	// annotations (annotation is a floor); failures or deadline overflow
+	// leave that node at its pre-probe caps. We block startup on this so
+	// the routing surface is stable when the listener opens.
+	probeCtx, probeCancel := context.WithTimeout(ctx, 2*cfg.ProbeTimeout)
+	pool.ProbeCapabilities(probeCtx, ethprober.NewEthProber())
+	probeCancel()
 
 	fc := cache.NewFinalityChecker(cfg.FinalityDepth)
 	healthDone := pool.StartHealthChecks(ctx, cfg.HealthInterval, cfg.LagThreshold, cfg.ProbeTimeout, fc.SetHead)
