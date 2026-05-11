@@ -15,13 +15,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// upgrader is the package-default Upgrader used by tests' mock-upstream
-// helpers. ServeWS builds its own per-instance upgrader from the
-// configured allowlist.
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
-
 // makeUpgrader builds an Upgrader whose CheckOrigin permits only the listed
 // origins. Allowlist entries and incoming Origin headers are normalised to
 // scheme://host[:port] (lowercased host, default ports dropped, trailing

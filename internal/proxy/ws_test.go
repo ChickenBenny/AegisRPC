@@ -19,6 +19,13 @@ import (
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
+// upgrader is the allow-all Upgrader used by mock upstream servers in this
+// test file. It lives in *_test.go so the production binary never ships an
+// Upgrader with CheckOrigin: return true.
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
 // mockUpstreamWS starts a WebSocket server that runs handler for each connection.
 // The server URL has the "ws" scheme already substituted.
 func mockUpstreamWS(t *testing.T, handler func(*websocket.Conn)) string {
